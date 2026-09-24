@@ -3,8 +3,9 @@ name: sync-images
 # 每小时检查一次目标用户有没有新图片, 有就抓下来推到 Cloudflare R2 (私有桶)
 on:
   schedule:
-    # 注意: 这是 UTC 时间. GitHub 的定时任务在高峰期可能延迟几分钟到几十分钟
-    - cron: '7 * * * *'
+    # 注意: 这是 UTC 时间. 整点前后是 GitHub 定时任务的高峰, 可能延迟甚至被丢弃,
+    # 所以放在每小时第 23 分钟 (官方文档建议避开整点)
+    - cron: '23 * * * *'
   workflow_dispatch:
     inputs:
       force_full:

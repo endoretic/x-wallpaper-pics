@@ -131,7 +131,7 @@ Variables：
 
 ### 4. 跑起来
 
-- 工作流 `.github/workflows/sync-images.yml` 默认每小时第 7 分钟跑一次（cron 是 UTC）
+- 工作流 `.github/workflows/sync-images.yml` 默认每小时第 23 分钟跑一次（cron 是 UTC；刻意避开整点高峰）
 - **首次运行**：手动触发一次 `sync-images`（Actions → sync-images → Run workflow），这样会立刻回填最近一页历史图片
 - 想一次性回填更多：把 `FULL_SYNC_PAGES` 调大（例如 `20` ≈ 最多 1 万条推文），或在手动触发时勾选 **force_full**
 - 只有仓库有活动时定时任务才会被调度；长期无提交的仓库 GitHub 可能暂停定时任务，届时手动触发一次即可恢复
@@ -170,7 +170,7 @@ CI 每轮上传新图后，会**先把新图并入清单，再写增量状态**�
 
 ### 7. 注意
 
-- 定时任务在整点高峰期可能延迟几分钟到几十分钟，属正常
+- GitHub 的定时任务是尽力而为：整点前后高峰期可能延迟几十分钟，甚至被直接丢弃；新加或刚改过的定时任务，头几轮也可能不触发
 - Cookie 会过期（改密码、登出全部设备、长期不用）。失效后 workflow 会在「获取用户信息失败」处报错，重新导出 cookie 更新 Secret 即可
 - 私有桶取图需要走 S3 API 或 Cloudflare 的签名 URL；如需公开访问再单独配 R2 自定义域名，本工具不依赖这一点
 - 建议用小号 cookie 跑，避免主号被风控
