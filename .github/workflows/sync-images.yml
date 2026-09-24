@@ -1,0 +1,55 @@
+name: sync-images
+
+# 每小时检查一次目标用户有没有新图片, 有就抓下来推到 Cloudflare R2 (私有桶)
+on:
+  schedule:
+    # 注意: 这是 UTC 时间. GitHub 的定时任务在高峰期可能延迟几分钟到几十分钟
+    - cron: '7 * * * *'
+  workflow_dispatch:
+    inputs:
+      force_full:
+        description: '忽略已有状态, 重新全量扫描 (首次回填历史图片时用)'
+        type: boolean
+        default: false
+
+# 同一时间只允许一个实例在跑, 避免两个 run 同时读写水位线状态
+concurrency:
+  group: sync-images
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: 安装依赖
+        run: pip install -r requirements.txt
+
+      - name: 自检 (离线, 不碰网络与密钥)
+        run: python selftest.py
+
+      - name: 增量同步到 R2
+        env:
+          # --- X / 推特 ---
+          TARGET_USER: ${{ vars.TARGET_USER }}
+          X_COOKIE: ${{ secrets.X_COOKIE }}
+          # --- Cloudflare R2 ---
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          # --- 行为开关 (想改直接改这里, 或改成 vars) ---
+          R2_PREFIX: ${{ vars.R2_PREFIX }}
+          PORTRAIT_DIR: '竖屏'
+          LANDSCAPE_DIR: '横屏方图'
+          HAS_VIDEO: '0'
+          MAX_KNOWN_IDS: '1000'
+          FULL_SYNC_PAGES: '1'
+          FORCE_FULL: ${{ inputs.force_full && '1' || '0' }}
+        run: python main.py --sync-r2

@@ -1,0 +1,19 @@
+# Python
+.venv/
+.uv-cache/
+__pycache__/
+*.pyc
+
+# 本地 cookie / 密钥, 绝不提交
+cookie.txt
+cookie*.txt
+!cookie.txt.example
+.env
+.env.*
+!.env.example
+
+# 下载产物与临时目录
+_selftest_out/
+*_*/竖屏/
+*_*/横屏方图/
+*.mp4

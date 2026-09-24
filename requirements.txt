@@ -1,0 +1,5 @@
+# downloader core
+httpx==0.28.1
+
+# project-level dep, used by --sync-r2 to upload to Cloudflare R2
+boto3==1.43.101
