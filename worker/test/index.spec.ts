@@ -209,3 +209,30 @@ describe('图片接口', () => {
     expect(feed.images.map((i: any) => i.id)).toEqual(['300-1', '300-2', '200', '100']);
   });
 });
+
+describe('清单缓存', () => {
+  it('清单更新后, 下一次请求立即看到新内容', async () => {
+    expect((await (await call(`/api/v1/latest/${USER}`)).json<any>()).id).toBe('300-1');
+    await ENV.WALLPAPER_BUCKET.put(`${P}/manifests/${USER}/portrait.json`, manifest('portrait', [
+      { id: '400', key: `${PORTRAIT}/400-2025-09-24-昵称-img.jpg`, post_id: '400', created_at: '2025-09-24T08:00:00Z' },
+      ...portraitImages,
+    ]));
+    expect((await (await call(`/api/v1/latest/${USER}`)).json<any>()).id).toBe('400');
+    expect((await (await call(`/api/v1/wallpapers/${USER}`)).json<any>()).total).toBe(5);
+  });
+
+  it('/muzei 的结果缓存也随清单更新作废', async () => {
+    const first = await (await call(`/api/v1/muzei/${USER}?recent=0`)).json<any>();
+    expect(first.images.map((i: any) => i.id)).toEqual(['300-1', '300-2', '200', '100']);
+    await ENV.WALLPAPER_BUCKET.put(`${P}/manifests/${USER}/portrait.json`, manifest('portrait', portraitImages.slice(2)));
+    const second = await (await call(`/api/v1/muzei/${USER}?recent=0`)).json<any>();
+    expect(second.images.map((i: any) => i.id)).toEqual(['200', '100']);
+  });
+
+  it('清单被删除后返回 404, 不会继续用旧缓存', async () => {
+    expect((await call(`/api/v1/wallpapers/${USER}`)).status).toBe(200);
+    await ENV.WALLPAPER_BUCKET.delete(`${P}/manifests/${USER}/portrait.json`);
+    expect((await call(`/api/v1/wallpapers/${USER}`)).status).toBe(404);
+    expect((await call(`/api/v1/image/${USER}/portrait/100`)).status).toBe(404);
+  });
+});

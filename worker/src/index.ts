@@ -136,18 +136,26 @@ async function handle(request: Request, env: Env): Promise<Response> {
 
     case 'muzei': {
       arity(1);
-      const { username, orientation, manifest, images } = await loadFor(env, args[0], params.get('orientation'));
-      const pool = recentPool(images, intParam(params, 'recent', 30));
+      const { username, orientation, manifest, images, cache } = await loadFor(env, args[0], params.get('orientation'));
+      const recent = intParam(params, 'recent', 30);
       const limit = Math.min(Math.max(intParam(params, 'limit', MAX_LIMIT), 1), MAX_LIMIT);
-      return json({
-        version: 1, updated_at: manifest.updated_at, username, orientation,
-        images: pool.slice(0, limit).map((img) => {
-          const item = describe(img, username, orientation);
-          // 图片地址不带 token: 客户端下载时自己加 Authorization 头
-          return { ...item, image_url: new URL(item.url, url.origin).toString(),
-                   title: img.created_at.slice(0, 10), byline: `@${username}` };
-        }),
-      });
+      // 全量列表有 700 多条, 生成一次要好几毫秒: 按参数记住生成好的结果, 清单变了会随缓存一起作废
+      const memoKey = `${url.origin}|${recent}|${limit}`;
+      let body = cache.feeds.get(memoKey);
+      if (body === undefined) {
+        body = JSON.stringify({
+          version: 1, updated_at: manifest.updated_at, username, orientation,
+          images: recentPool(images, recent).slice(0, limit).map((img) => {
+            const item = describe(img, username, orientation);
+            // 图片地址不带 token: 客户端下载时自己加 Authorization 头
+            return { ...item, image_url: url.origin + item.url,
+                     title: img.created_at.slice(0, 10), byline: `@${username}` };
+          }),
+        });
+        cache.feeds.set(memoKey, body);
+        while (cache.feeds.size > MAX_CACHED_FEEDS) cache.feeds.delete(cache.feeds.keys().next().value!);
+      }
+      return jsonText(body);
     }
 
     case 'image': {
@@ -214,9 +222,40 @@ async function loadFor(env: Env, usernameArg: string, orientationArg: string | n
   if (!USERNAME_RE.test(usernameArg) || RESERVED_DIRS.has(usernameArg)) throw new HttpError(400, 'invalid username');
   const orientation = (orientationArg ?? 'portrait') as Orientation;
   if (!ORIENTATIONS.includes(orientation)) throw new HttpError(400, 'invalid orientation');
-  const manifest = await readJson<Manifest>(env, joinKey(prefix(env), 'manifests', usernameArg, `${orientation}.json`));
-  if (!manifest) throw new HttpError(404, 'unknown user');
-  return { username: usernameArg, orientation, manifest, images: validImages(manifest, env, usernameArg, orientation) };
+  const key = joinKey(prefix(env), 'manifests', usernameArg, `${orientation}.json`);
+  const cached = await loadManifest(env, key, usernameArg, orientation);
+  if (!cached) throw new HttpError(404, 'unknown user');
+  return { username: usernameArg, orientation, manifest: cached.manifest, images: cached.images, cache: cached };
+}
+
+// 解析并校验过的清单留在本 isolate 的内存里: 每次请求只用 ETag 向 R2 确认清单变没变,
+// 没变时 R2 不传正文、这里也不重新解析 (完整清单 700 多条, 每次都解析会吃掉免费版大部分 CPU 额度)
+interface CachedManifest {
+  etag: string;
+  manifest: Manifest;
+  images: ManifestImage[];
+  /** 生成好的 /muzei 响应, 键为 来源|recent|limit */
+  feeds: Map<string, string>;
+}
+const manifestCache = new Map<string, CachedManifest>();
+const MAX_CACHED_MANIFESTS = 32;
+const MAX_CACHED_FEEDS = 8;
+
+async function loadManifest(env: Env, key: string, username: string, orientation: Orientation): Promise<CachedManifest | null> {
+  const cached = manifestCache.get(key);
+  const object = await env.WALLPAPER_BUCKET.get(key, cached ? { onlyIf: { etagDoesNotMatch: cached.etag } } : undefined);
+  if (!object) {
+    manifestCache.delete(key);
+    return null;
+  }
+  if (cached && !('body' in object)) return cached;         // ETag 没变
+  if (!('body' in object)) return null;
+  const manifest = await object.json<Manifest>();
+  const entry = { etag: object.etag, manifest, images: validImages(manifest, env, username, orientation), feeds: new Map<string, string>() };
+  manifestCache.delete(key);
+  manifestCache.set(key, entry);
+  while (manifestCache.size > MAX_CACHED_MANIFESTS) manifestCache.delete(manifestCache.keys().next().value!);
+  return entry;
 }
 
 function validImages(manifest: Manifest, env: Env, username: string, orientation: Orientation): ManifestImage[] {
@@ -269,7 +308,11 @@ function intParam(params: URLSearchParams, name: string, fallback: number): numb
 }
 
 function json(body: unknown, status = 200, cache = CACHE_JSON): Response {
-  return new Response(JSON.stringify(body), {
+  return jsonText(JSON.stringify(body), status, cache);
+}
+
+function jsonText(text: string, status = 200, cache = CACHE_JSON): Response {
+  return new Response(text, {
     status,
     headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': cache, 'X-Content-Type-Options': 'nosniff' },
   });
