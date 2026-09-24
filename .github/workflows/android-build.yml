@@ -47,6 +47,7 @@ jobs:
         env:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
         run: |
+          set -o pipefail      # 默认 shell 不带 pipefail, 否则 gradle 失败会被 tee 的退出码盖掉
           task=assembleDebug
           if [ -n "${ANDROID_KEYSTORE_PATH:-}" ]; then task=assembleRelease; fi
           gradle -p android-muzei-source --console=plain testDebugUnitTest "$task" 2>&1 | tee "$RUNNER_TEMP/gradle.log"

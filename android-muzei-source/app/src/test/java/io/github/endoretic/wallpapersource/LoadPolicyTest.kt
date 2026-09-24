@@ -24,7 +24,7 @@ class LoadPolicyTest {
     }
 
     @Test
-    fun `列表过期后刷新; 从没刷新过也算过期`() {
+    fun `列表过期后刷新, 从没刷新过也算过期`() {
         assertTrue(RefreshPolicy.shouldRefreshNow(initial = false, hasArtwork = true, lastRefreshAt = now - hour, now = now))
         assertTrue(RefreshPolicy.shouldRefreshNow(initial = false, hasArtwork = true, lastRefreshAt = 0, now = now))
     }
