@@ -1,0 +1,84 @@
+name: android-build
+
+# 打包 Muzei 插件 APK: 跑单元测试, 有签名密钥时打 release 包, 否则打 debug 包
+on:
+  push:
+    paths:
+      - 'android-muzei-source/**'
+      - '.github/workflows/android-build.yml'
+  pull_request:
+    paths:
+      - 'android-muzei-source/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      VERSION_CODE: ${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: '9.7.1'
+
+      - name: 解出签名密钥
+        if: env.KEYSTORE_BASE64 != ''
+        run: |
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+
+      - name: 单元测试并打包
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          task=assembleDebug
+          if [ -n "${ANDROID_KEYSTORE_PATH:-}" ]; then task=assembleRelease; fi
+          gradle -p android-muzei-source --console=plain testDebugUnitTest "$task" 2>&1 | tee "$RUNNER_TEMP/gradle.log"
+
+      # 构建日志需要仓库管理员权限才能下载, 注解则公开可读: 失败时把关键错误转成注解, 方便排查
+      - name: 把编译 / 测试错误转成注解
+        if: failure()
+        run: |
+          python3 - "$RUNNER_TEMP/gradle.log" "$GITHUB_WORKSPACE" <<'PY'
+          import sys
+          lines = open(sys.argv[1], encoding='utf-8', errors='replace').read().splitlines()
+          workspace = sys.argv[2].rstrip('/') + '/'
+          def emit(text):
+              text = text.replace('file://' + workspace, '').replace(workspace, '')[:4000]
+              print('::error::' + text.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A'))
+          count = 0
+          for i, line in enumerate(lines):
+              if count >= 9:
+                  break
+              if line.startswith('e: '):                       # Kotlin 编译错误
+                  emit(line); count += 1
+              elif ' FAILED' in line and '>' in line:          # 单元测试失败 (后面跟着断言信息)
+                  emit('\n'.join([line] + lines[i + 1:i + 9])); count += 1
+              elif line.startswith('* What went wrong:'):      # Gradle / AGP / 资源错误
+                  block = []
+                  for follow in lines[i + 1:i + 25]:
+                      if follow.startswith('* Try:'):
+                          break
+                      block.append(follow)
+                  emit('\n'.join(block).strip()); count += 1
+          if count == 0:
+              emit('\n'.join(lines[-30:]))
+          PY
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wallpaper-source-apk
+          path: android-muzei-source/app/build/outputs/apk/**/*.apk
+          if-no-files-found: error

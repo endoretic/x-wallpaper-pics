@@ -21,3 +21,14 @@ _selftest_out/
 node_modules/
 .wrangler/
 .dev.vars*
+
+# Android 签名密钥 (只存本地 + GitHub Secret, 绝不提交)
+.signing/
+*.jks
+*.keystore
+
+# Android 构建产物 (android-muzei-source/)
+android-muzei-source/.gradle/
+android-muzei-source/.kotlin/
+android-muzei-source/**/build/
+local.properties

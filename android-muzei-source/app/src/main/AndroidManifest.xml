@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- 设置里有访问 token: 关掉备份, 并把设置排除在换机迁移之外 -->
+    <application
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/AppTheme">
+
+        <activity
+            android:name=".SettingsActivity"
+            android:exported="true"
+            android:label="@string/settings_title">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- 只有本应用和 Muzei 能访问 (ACCESS_PROVIDER 权限由 Muzei 声明) -->
+        <provider
+            android:name=".WallpaperArtProvider"
+            android:authorities="${applicationId}.art"
+            android:description="@string/source_description"
+            android:exported="true"
+            android:label="@string/source_name"
+            android:permission="com.google.android.apps.muzei.api.ACCESS_PROVIDER">
+            <intent-filter>
+                <action android:name="com.google.android.apps.muzei.api.MuzeiArtProvider" />
+            </intent-filter>
+            <meta-data
+                android:name="settingsActivity"
+                android:value="io.github.endoretic.wallpapersource.SettingsActivity" />
+            <meta-data
+                android:name="setupActivity"
+                android:value="io.github.endoretic.wallpapersource.SettingsActivity" />
+        </provider>
+    </application>
+</manifest>
