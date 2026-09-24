@@ -19,10 +19,10 @@ import java.io.IOException
 import java.util.concurrent.TimeUnit
 
 /**
- * 从 Worker 拉取壁纸列表, 整体替换 Muzei 里的图片池
+ * 从 Worker 拉取壁纸列表, 整体替换 Muzei 里的图片池, 再排一轮预下载把新图存到本地
  *
  * 同一张图的 token 不变, Muzei 会原地更新而不是当成新图, 已缓存的图片也不会重新下载;
- * 不在新列表里的图 (例如改了横竖或轮换范围) 会被移除
+ * 不在新列表里的图 (例如改了横竖或轮换范围) 会被移出图片池 (本地原图保留)
  */
 class RefreshWorker(context: Context, params: WorkerParameters) : Worker(context, params) {
 
@@ -36,7 +36,7 @@ class RefreshWorker(context: Context, params: WorkerParameters) : Worker(context
             return if (e.status >= 500 && runAttemptCount + 1 < MAX_ATTEMPTS) Result.retry() else Result.failure()
         } catch (e: IOException) {
             Log.w(TAG, "刷新失败: ${WallpaperApi.describe(e)}")
-            // 重试几次就停, 剩下的交给 Muzei 下次请求加载或 12 小时的定时刷新, 不在后台无限退避
+            // 重试几次就停, 剩下的交给 Muzei 下次请求加载或 6 小时的定时刷新, 不在后台无限退避
             return if (runAttemptCount + 1 < MAX_ATTEMPTS) Result.retry() else Result.failure()
         }
         Settings(applicationContext).markRefreshed(System.currentTimeMillis())
@@ -55,6 +55,10 @@ class RefreshWorker(context: Context, params: WorkerParameters) : Worker(context
             )
         }
         ProviderContract.getProviderClient(applicationContext, WallpaperArtProvider::class.java).setArtwork(artworks)
+
+        // 本地还没有的图预先下载好, 之后换图只读本地
+        val store = ImageStore.forContext(applicationContext)
+        DownloadWorker.enqueue(applicationContext, remaining = images.count { !store.contains(it.token) })
         return Result.success()
     }
 
@@ -74,9 +78,9 @@ class RefreshWorker(context: Context, params: WorkerParameters) : Worker(context
                 WORK_NOW, if (replace) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.KEEP, request)
         }
 
-        /** 每 12 小时刷新一次, 让新发的图能进到轮换池 (即使 Muzei 还没轮完现有的图) */
+        /** 每 6 小时检查一次有没有新图, 有就加进轮换池并下载到本地 (即使 Muzei 还没轮完现有的图) */
         fun schedulePeriodic(context: Context) {
-            val request = PeriodicWorkRequest.Builder(RefreshWorker::class.java, 12, TimeUnit.HOURS)
+            val request = PeriodicWorkRequest.Builder(RefreshWorker::class.java, 6, TimeUnit.HOURS)
                 .setConstraints(NETWORK).build()
             WorkManager.getInstance(context).enqueueUniquePeriodicWork(
                 WORK_PERIODIC, ExistingPeriodicWorkPolicy.KEEP, request)

@@ -4,7 +4,6 @@ import android.provider.BaseColumns
 import com.google.android.apps.muzei.api.provider.Artwork
 import com.google.android.apps.muzei.api.provider.MuzeiArtProvider
 import java.io.ByteArrayInputStream
-import java.io.File
 import java.io.IOException
 import java.io.InputStream
 
@@ -39,7 +38,8 @@ class WallpaperArtProvider : MuzeiArtProvider() {
 
     /**
      * Muzei 缓存里没有这张图时调用
-     * 先查本地原图 (ImageStore), 没有才带上 token 去请求 Worker (默认实现不带认证头), 下载后存一份;
+     * 读本地原图 (ImageStore, 刷新后已预先下载); 还没下载到的才临时带上 token 去请求 Worker
+     * (默认实现不带认证头), 下载后存一份;
      * 设置了显示方式时, 再排进与屏幕同尺寸的画布交给 Muzei (方式记在这张图的 metadata 里)
      */
     @Throws(IOException::class)
@@ -47,7 +47,7 @@ class WallpaperArtProvider : MuzeiArtProvider() {
         val context = context ?: throw IOException("provider 尚未初始化")
         val config = Settings(context).config() ?: throw IOException("尚未配置 Worker 地址与 token")
         val imageUrl = artwork.persistentUri?.toString() ?: throw IllegalStateException("图片没有地址")
-        val store = ImageStore(File(context.noBackupFilesDir, "originals"))
+        val store = ImageStore.forContext(context)
         val key = ImageStore.keyFor(artwork.token, imageUrl)
         val bytes = store.get(key) ?: download(config, imageUrl).also { store.put(key, it) }
         val spec = DisplaySpec.parse(artwork.metadata) ?: return ByteArrayInputStream(bytes)

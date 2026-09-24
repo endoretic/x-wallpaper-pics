@@ -2,6 +2,7 @@ package io.github.endoretic.wallpapersource
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -31,19 +32,21 @@ class ImageStoreTest {
     }
 
     @Test
-    fun `超过上限时先删最久没用的`() {
+    fun `永久保存, 不因数量或大小自动清理`() {
+        val store = ImageStore(temp.newFolder("originals"))
+        repeat(50) { store.put("k$it", ByteArray(1024)) }
+        assertTrue((0 until 50).all { store.contains("k$it") })
+        assertEquals(50L * 1024, store.totalBytes())
+    }
+
+    @Test
+    fun `contains 只认完整写入的图`() {
         val dir = temp.newFolder("originals")
-        val store = ImageStore(dir, maxBytes = 25)
-        store.put("a", ByteArray(10))
-        store.put("b", ByteArray(10))
-        // 把 a 和 b 的最近使用时间拉开, 再读一次 a, 让 b 成为最久没用的
-        dir.listFiles()!!.forEach { it.setLastModified(1_000_000) }
-        store.get("a")
-        store.put("c", ByteArray(10))                   // 30 > 25, 应删掉 b
-        assertTrue(store.get("a") != null)
-        assertNull(store.get("b"))
-        assertTrue(store.get("c") != null)
-        assertTrue(store.totalBytes() <= 25)
+        val store = ImageStore(dir)
+        store.put("done", byteArrayOf(1))
+        assertTrue(store.contains("done"))
+        assertFalse(store.contains("missing"))
+        assertTrue("不应残留临时文件", dir.listFiles()!!.none { it.name.endsWith(".tmp") })
     }
 
     @Test
