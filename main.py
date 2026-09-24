@@ -54,9 +54,7 @@ load_env_file()
 ########## 配置 (本地读 .env, CI 读 GitHub Secrets / Variables) ##########
 
 TARGET_USER = os.environ.get('TARGET_USER', '')
-# 目标用户名 (@ 后面的字符), 只支持一个用户
-if not TARGET_USER:
-    raise SystemExit('缺少 TARGET_USER\n')
+# 目标用户名 (@ 后面的字符), 只支持一个用户; 在 main() 启动时检查 (其他脚本 import 本模块时不需要它)
 
 SAVE_PATH = os.environ.get('SAVE_PATH', '')
 # 本地保存目录, 留空 = 脚本所在目录 (--sync-r2 模式下用临时目录, 该值忽略)
@@ -664,6 +662,8 @@ def local_run():
 
 
 def main():
+    if not TARGET_USER:
+        raise SystemExit('缺少 TARGET_USER\n')
     prepare_headers()
 
     if '--sync-r2' in sys.argv:

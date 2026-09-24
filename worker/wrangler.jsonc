@@ -1,0 +1,26 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "wallpaper-api",
+  "main": "src/index.ts",
+  // 不能晚于本地测试用的 workerd 版本支持的日期
+  "compatibility_date": "2026-08-01",
+
+  // 私有桶通过 binding 访问, Worker 里不放任何 R2 密钥; 换成你自己的桶名
+  "r2_buckets": [
+    { "binding": "WALLPAPER_BUCKET", "bucket_name": "wallpaper-pics" }
+  ],
+
+  // 与抓取端 (main.py) 的 R2_PREFIX / PORTRAIT_DIR / LANDSCAPE_DIR 保持一致
+  "vars": {
+    "R2_PREFIX": "pics",
+    "PORTRAIT_DIR": "竖屏",
+    "LANDSCAPE_DIR": "横屏方图"
+  }
+
+  // 访问 token 是 secret, 不写在这里: npx wrangler secret put WALLPAPER_ACCESS_TOKEN
+
+  // 自定义域名在 Cloudflare 控制台里配置 (Worker -> Settings -> Domains & Routes)。
+  // 这里不写 routes 时, deploy 不会改动控制台里的自定义域名, 且 workers.dev 保持开启。
+  // - 想关掉 workers.dev: 在这里写 "workers_dev": false (只在控制台里关掉的话, 下次 deploy 会重新打开)
+  // - 改成在这里写 routes: 同时写 "workers_dev": true, 否则 deploy 会把 workers.dev 关掉
+}

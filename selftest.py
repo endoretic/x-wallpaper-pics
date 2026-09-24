@@ -2,15 +2,17 @@
 """离线自检
 
 覆盖: .env 加载 / cookie 读取 / 横竖判定 / JPEG 尺寸解析 / 媒体提取 /
-      本地分文件夹落盘 / R2 增量同步(用假 S3 + 假 X 接口, 完全不联网)
+      本地分文件夹落盘 / R2 增量同步 / 壁纸清单 (用假 S3 + 假 X 接口, 完全不联网)
 """
 
 import asyncio
+import calendar
 import io
 import json
 import os
 import shutil
 import sys
+import time
 import types
 import urllib.parse
 
@@ -153,6 +155,17 @@ class _FakeS3:
         with open(Filename, 'rb') as f:
             R2_STORE[Key] = f.read()
         UPLOADS.append((Key, (ExtraArgs or {}).get('ContentType')))
+
+    def list_objects_v2(self, Bucket=None, Prefix='', MaxKeys=1000, ContinuationToken=None, **kwargs):
+        # 故意每页只给 2 个, 顺带测分页
+        keys = sorted(k for k in R2_STORE if k.startswith(Prefix))
+        start = int(ContinuationToken or 0)
+        page = keys[start:start + min(MaxKeys, 2)]
+        resp = {'Contents': [{'Key': k, 'Size': len(R2_STORE[k])} for k in page],
+                'IsTruncated': start + len(page) < len(keys)}
+        if resp['IsTruncated']:
+            resp['NextContinuationToken'] = str(start + len(page))
+        return resp
 
 
 _fake_boto3 = types.ModuleType('boto3')
@@ -404,6 +417,123 @@ assert new_keys[0].startswith(f'pic/testuser/{PORTRAIT_DIR}/')
 assert main.down_count == 1 and main.portrait_count == 1
 assert json.loads(R2_STORE[state_key].decode())['watermark_msecs'] == (T0 + 400) * 1000
 print('  只新增:', new_keys[0])
+
+# ---------------------------------------------------------------- 6. 壁纸清单
+print('\n=== 7. 壁纸清单 (manifest) ===')
+import manifest
+
+DIRS = {'portrait': PORTRAIT_DIR, 'landscape': LANDSCAPE_DIR}
+S3 = _FakeS3()
+R2_STORE.clear()
+
+
+def snowflake(iso, seq=0):
+    # 按指定发帖时间构造推文 ID (snowflake 高位 = 毫秒时间戳 - 纪元)
+    msecs = calendar.timegm(time.strptime(iso, '%Y-%m-%dT%H:%M:%SZ')) * 1000
+    return str(((msecs - manifest.TWITTER_EPOCH_MS) << 22) | seq)
+
+
+def load(key):
+    return json.loads(R2_STORE[key].decode('utf-8'))
+
+
+def img(user, folder, name):
+    return f'pic/{user}/{folder}/{name}'
+
+
+OLD, MID, NEW, NEWEST = (snowflake(f'2025-09-{day}T08:00:00Z') for day in (21, 22, 23, 24))
+P_KEY, L_KEY, INDEX_KEY = ('pic/manifests/testuser/portrait.json', 'pic/manifests/testuser/landscape.json',
+                           'pic/manifests/index.json')
+batch = [
+    img('testuser', PORTRAIT_DIR, f'{OLD}-2025-09-21-测试昵称-img.jpg'),
+    img('testuser', LANDSCAPE_DIR, f'{MID}-2025-09-22-测试昵称-img.png'),
+    img('testuser', PORTRAIT_DIR, f'{NEW}-2025-09-23-测试昵称-img-1.jpg'),
+    img('testuser', PORTRAIT_DIR, f'{NEW}-2025-09-23-测试昵称-img-2.webp'),
+    img('other_user', PORTRAIT_DIR, f'{MID}-2025-09-22-别的昵称-img.jpg'),
+    'pic/state/testuser.json',                              # 状态文件
+    'pic/testuser/9-2024-01-01-测试昵称-vid.mp4',            # 视频
+    img('bad-name!', PORTRAIT_DIR, '1-2024-01-01-x-img.jpg'),   # 非法用户名
+]
+
+# 键名解析
+user, orientation, entry = manifest.parse_image_key(batch[0], 'pic', DIRS)
+assert (user, orientation) == ('testuser', 'portrait')
+assert entry == {'id': OLD, 'key': batch[0], 'post_id': OLD, 'created_at': '2025-09-21T08:00:00Z'}, entry
+assert manifest.parse_image_key(batch[1], 'pic', DIRS)[1] == 'landscape'
+multi = manifest.parse_image_key(batch[3], 'pic', DIRS)[2]
+assert multi['id'] == f'{NEW}-2' and multi['media_index'] == 2
+assert [manifest.parse_image_key(k, 'pic', DIRS) for k in batch[5:]] == [None, None, None]
+short = manifest.parse_image_key(img('testuser', PORTRAIT_DIR, '1001-2023-11-14-测试昵称-img.jpg'), 'pic', DIRS)[2]
+assert short['created_at'] == '2023-11-14T00:00:00Z', '非 snowflake ID 退回文件名日期'
+assert manifest.parse_image_key(f'testuser/{PORTRAIT_DIR}/{OLD}-2025-09-21-x-img.jpg', '', DIRS)[0] == 'testuser'
+assert manifest.manifest_key('', 'u', 'portrait') == 'manifests/u/portrait.json'
+print('  键名解析: 竖屏 / 横屏方图 / 多图序号 / 中文键名正确; 状态、视频、非法用户名被忽略')
+
+# 增量并入
+added = manifest.add_images(S3, 'fake-bucket', 'pic', DIRS, batch,
+                            extra={batch[0]: {'width': 1080, 'height': 1920}}, now_iso='2025-09-23T09:00:00Z')
+assert added == {('testuser', 'portrait'): 3, ('testuser', 'landscape'): 1, ('other_user', 'portrait'): 1}, added
+portrait = load(P_KEY)
+assert [e['id'] for e in portrait['images']] == [f'{NEW}-1', f'{NEW}-2', OLD], '应为新 -> 旧, 同一推文按序号'
+assert (portrait['username'], portrait['orientation'], portrait['count']) == ('testuser', 'portrait', 3)
+assert portrait['images'][2]['width'] == 1080 and portrait['images'][0]['key'] == batch[2]
+assert [e['id'] for e in load(L_KEY)['images']] == [MID]
+assert [e['key'] for e in load('pic/manifests/other_user/portrait.json')['images']] == [batch[4]], '用户之间不能混'
+assert [(u['username'], u['portrait_count'], u['landscape_count']) for u in load(INDEX_KEY)['users']] == \
+    [('other_user', 1, 0), ('testuser', 3, 1)]
+assert not any('http' in R2_STORE[k].decode('utf-8') for k in R2_STORE), '清单里不能出现 URL'
+print(f'  首次并入: 竖屏 {portrait["count"]} / 横屏方图 1 / 另一用户 1, 新 -> 旧排序正确')
+
+added = manifest.add_images(S3, 'fake-bucket', 'pic', DIRS, [batch[0], batch[2]])
+assert added == {('testuser', 'portrait'): 0}, added
+assert [e['id'] for e in load(P_KEY)['images']] == [f'{NEW}-1', f'{NEW}-2', OLD]
+assert load(P_KEY)['images'][2]['width'] == 1080, '重复并入不能丢掉已有字段'
+print('  重复并入 -> 新增 0, 条目与已有字段不变')
+
+newest_key = img('testuser', PORTRAIT_DIR, f'{NEWEST}-2025-09-24-测试昵称-img.jpg')
+manifest.add_images(S3, 'fake-bucket', 'pic', DIRS, [newest_key])
+assert load(P_KEY)['images'][0]['id'] == NEWEST and load(P_KEY)['count'] == 4
+assert [(u['username'], u['portrait_count'], u['landscape_count']) for u in load(INDEX_KEY)['users']] == \
+    [('other_user', 1, 0), ('testuser', 4, 1)], '只动了竖屏时, 横屏张数应从其清单读回'
+print('  新图并入 -> 排在最前, index 计数同步')
+
+
+class _BrokenS3(_FakeS3):
+    def get_object(self, Bucket=None, Key=None, **kwargs):
+        raise Exception('An error occurred (InternalError) when calling the GetObject operation')
+
+
+snapshot = dict(R2_STORE)
+failed = False
+try:
+    manifest.add_images(_BrokenS3(), 'fake-bucket', 'pic', DIRS,
+                        [img('testuser', PORTRAIT_DIR, f'{NEWEST}-2025-09-24-测试昵称-img-9.jpg')])
+except Exception as e:
+    failed = 'InternalError' in str(e)
+assert failed and R2_STORE == snapshot, '读清单出错时必须报错, 且不能写任何清单'
+print('  读清单出错 -> 直接报错, 线上清单保持不动')
+
+# 重建: 以桶内对象为准; MID 横图已从桶里消失 -> 应被移出清单
+for key in batch[:1] + batch[2:5] + batch[6:] + [newest_key]:
+    R2_STORE[key] = b'img'
+R2_STORE['pic/state/testuser.json'] = b'{"watermark_msecs": 1}'
+not_manifests = {k: v for k, v in R2_STORE.items() if '/manifests/' not in k}
+before_plan = dict(R2_STORE)
+grouped, skipped = manifest.plan_rebuild(S3, 'fake-bucket', 'pic', DIRS)
+assert R2_STORE == before_plan, 'dry-run (plan) 不能写任何东西'
+assert sorted(grouped) == [('other_user', 'landscape'), ('other_user', 'portrait'),
+                           ('testuser', 'landscape'), ('testuser', 'portrait')]
+assert len(grouped[('testuser', 'portrait')]) == 4 and grouped[('testuser', 'landscape')] == []
+assert skipped == [batch[7], batch[6]], skipped
+manifest.apply_rebuild(S3, 'fake-bucket', 'pic', grouped, now_iso='2025-09-25T00:00:00Z')
+portrait = load(P_KEY)
+assert [e['id'] for e in portrait['images']] == [NEWEST, f'{NEW}-1', f'{NEW}-2', OLD]
+assert portrait['images'][3]['width'] == 1080, '重建应保留旧清单里的宽高'
+assert load(L_KEY)['images'] == [] and load(L_KEY)['count'] == 0, '桶里已删除的图应移出清单'
+assert [(u['username'], u['portrait_count'], u['landscape_count']) for u in load(INDEX_KEY)['users']] == \
+    [('other_user', 1, 0), ('testuser', 4, 0)]
+assert {k: v for k, v in R2_STORE.items() if '/manifests/' not in k} == not_manifests, '重建只能写 manifests/'
+print(f'  重建: 分页列举 {len(not_manifests)} 个对象, 忽略 {len(skipped)} 个; 状态与图片未被改动')
 
 shutil.rmtree(TEST_DIR, ignore_errors=True)
 print('\n全部自检通过 (测试用户: testuser, 全程未联网)')

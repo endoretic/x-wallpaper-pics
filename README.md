@@ -12,6 +12,9 @@
 {R2_PREFIX}/{用户名}/竖屏/{推文ID}-{日期}-{昵称}-img.jpg
 {R2_PREFIX}/{用户名}/横屏方图/{推文ID}-{日期}-{昵称}-img.jpg
 {R2_PREFIX}/state/{用户名}.json          # 增量状态
+{R2_PREFIX}/manifests/index.json                 # 壁纸清单: 所有用户及张数
+{R2_PREFIX}/manifests/{用户名}/portrait.json      # 竖屏清单, 新 -> 旧
+{R2_PREFIX}/manifests/{用户名}/landscape.json     # 横屏方图清单, 新 -> 旧
 ```
 
 用**推文 ID** 命名，保证脚本可重复执行、不会重名或错位。一条推文有多张图时追加 `-1` / `-2`，否则它们会算出同一个键、上传时互相覆盖：
@@ -150,12 +153,29 @@ Variables：
 - 同一秒可能发多条推文，所以判定是「时间 > 水位线」**或**「时间 == 水位线且推文 ID 未记录过」，`known_tweet_ids` 就是补这个漏的
 - 对象键里带推文 ID，重复执行只会覆盖同名对象，不会产生重复图片
 
-### 6. 注意
+### 6. 壁纸清单（manifest）
+
+清单是给壁纸客户端用的图片索引，只存对象键、推文 ID 和发帖时间（由推文 ID 推出），不存任何 URL，也不需要重新下载图片。条目 ID 由文件名推出，重复生成也不会变。
+
+按桶里现有的图片重建全部清单（迁移或恢复时用；只写 `manifests/`，不动图片和 `state/`）：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\rebuild_manifests.py --dry-run   # 先看检测结果
+.\.venv\Scripts\python.exe scripts\rebuild_manifests.py             # 写入
+```
+
+请在 workflow 空闲时执行，避免与 CI 同时写清单。
+
+### 7. 注意
 
 - 定时任务在整点高峰期可能延迟几分钟到几十分钟，属正常
 - Cookie 会过期（改密码、登出全部设备、长期不用）。失效后 workflow 会在「获取用户信息失败」处报错，重新导出 cookie 更新 Secret 即可
 - 私有桶取图需要走 S3 API 或 Cloudflare 的签名 URL；如需公开访问再单独配 R2 自定义域名，本工具不依赖这一点
 - 建议用小号 cookie 跑，避免主号被风控
+
+## 可选：壁纸 API（Cloudflare Worker）
+
+[`worker/`](worker/) 是一个只读的 Cloudflare Worker：通过 R2 binding 读清单和图片，对外提供带 token 的接口，供手机壁纸客户端（如 Muzei 插件）使用。R2 桶保持私有，手机端拿不到任何存储凭据。部署步骤与接口说明见 [worker/README.md](worker/README.md)。
 
 ## 可选：手动用 AWS CLI / rclone 核对桶内容
 

@@ -16,3 +16,8 @@ _selftest_out/
 *_*/竖屏/
 *_*/横屏方图/
 *.mp4
+
+# Cloudflare Worker (worker/)
+node_modules/
+.wrangler/
+.dev.vars*
