@@ -19,6 +19,25 @@ npx wrangler secret put WALLPAPER_ACCESS_TOKEN       # 粘贴一个足够长的�
 - token 只存在 Cloudflare 的 secret 里，不要写进仓库或 `wrangler.jsonc`
 - 本地开发（`npx wrangler dev`）用的 token 写在 `worker/.dev.vars`（已被 gitignore）：`WALLPAPER_ACCESS_TOKEN=...`
 
+## 可选：用 Worker 定时触发同步
+
+GitHub Actions 的定时触发是尽力而为，可能大幅延迟甚至一直不触发。Worker 的 Cron Trigger（`wrangler.jsonc` 里的 `triggers.crons`，默认每小时第 23 分钟）可以代为调用 GitHub 接口触发 `sync-images` workflow，效果等同于在 Actions 页面手动点 Run workflow。
+
+1. GitHub → Settings → Developer settings → **Fine-grained personal access tokens** → Generate new token
+   - Repository access：**Only select repositories**，只选这个仓库
+   - Permissions → Repository permissions → **Actions: Read and write**（其余保持 No access）
+2. 把 token 和仓库名存成 Worker 的 secret：
+
+```powershell
+npx wrangler secret put GITHUB_DISPATCH_TOKEN      # 粘贴上一步的 token
+npx wrangler secret put GITHUB_DISPATCH_REPO       # 例如 owner/repo
+```
+
+- 没配置这两个 secret 时，定时任务什么都不做
+- token 只能触发 / 取消这个仓库的 workflow，读不到仓库的 Secrets
+- 触发失败（例如 token 过期）会记在 Cloudflare 控制台该 Worker 的 Cron 事件日志里
+- 可选变量：`SYNC_WORKFLOW`（默认 `sync-images.yml`）、`SYNC_REF`（默认 `main`）
+
 ## 接口
 
 所有请求都要带 `Authorization: Bearer <token>`（手动测试时也可以用 `?token=<token>`，但它会出现在浏览器历史和各种日志里，日常不要用）。鉴权失败一律 `403`，不透露用户或图片是否存在。

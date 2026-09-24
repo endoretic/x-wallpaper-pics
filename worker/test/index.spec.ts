@@ -1,6 +1,6 @@
 import { env } from 'cloudflare:test';
 import { beforeEach, describe, expect, it } from 'vitest';
-import worker, { type Env } from '../src/index';
+import worker, { dispatchSync, type Env } from '../src/index';
 
 const ENV = env as unknown as Env;
 const TOKEN = 'test-token';
@@ -234,5 +234,43 @@ describe('清单缓存', () => {
     await ENV.WALLPAPER_BUCKET.delete(`${P}/manifests/${USER}/portrait.json`);
     expect((await call(`/api/v1/wallpapers/${USER}`)).status).toBe(404);
     expect((await call(`/api/v1/image/${USER}/portrait/100`)).status).toBe(404);
+  });
+});
+
+describe('定时触发同步', () => {
+  const calls: { url: string; init: RequestInit }[] = [];
+  const fakeFetch = (status: number) => (async (url: string, init: RequestInit) => {
+    calls.push({ url, init });
+    return new Response(null, { status });
+  }) as unknown as typeof fetch;
+
+  beforeEach(() => { calls.length = 0; });
+
+  it('没配置 token 或仓库时什么都不做', async () => {
+    expect(await dispatchSync({ ...ENV, GITHUB_DISPATCH_TOKEN: undefined, GITHUB_DISPATCH_REPO: 'o/r' }, fakeFetch(204))).toBe(false);
+    expect(await dispatchSync({ ...ENV, GITHUB_DISPATCH_TOKEN: 't', GITHUB_DISPATCH_REPO: undefined }, fakeFetch(204))).toBe(false);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('按 GitHub workflow_dispatch 接口发请求', async () => {
+    expect(await dispatchSync({ ...ENV, GITHUB_DISPATCH_TOKEN: 'gh-token', GITHUB_DISPATCH_REPO: 'owner/repo' }, fakeFetch(204))).toBe(true);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe('https://api.github.com/repos/owner/repo/actions/workflows/sync-images.yml/dispatches');
+    expect(calls[0].init.method).toBe('POST');
+    expect((calls[0].init.headers as Record<string, string>).Authorization).toBe('Bearer gh-token');
+    expect(JSON.parse(calls[0].init.body as string)).toEqual({ ref: 'main' });
+  });
+
+  it('GitHub 返回非 204 时报错, 且错误信息里没有 token', async () => {
+    await expect(dispatchSync({ ...ENV, GITHUB_DISPATCH_TOKEN: 'gh-token', GITHUB_DISPATCH_REPO: 'owner/repo' }, fakeFetch(401)))
+      .rejects.toThrow(/HTTP 401/);
+    await expect(dispatchSync({ ...ENV, GITHUB_DISPATCH_TOKEN: 'gh-token', GITHUB_DISPATCH_REPO: 'owner/repo' }, fakeFetch(401)))
+      .rejects.not.toThrow(/gh-token/);
+  });
+
+  it('仓库名格式不对时拒绝发请求', async () => {
+    await expect(dispatchSync({ ...ENV, GITHUB_DISPATCH_TOKEN: 't', GITHUB_DISPATCH_REPO: 'owner/repo/../x' }, fakeFetch(204)))
+      .rejects.toThrow(/owner\/repo/);
+    expect(calls).toHaveLength(0);
   });
 });

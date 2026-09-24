@@ -15,9 +15,15 @@
     "R2_PREFIX": "pics",
     "PORTRAIT_DIR": "竖屏",
     "LANDSCAPE_DIR": "横屏方图"
-  }
+  },
 
   // 访问 token 是 secret, 不写在这里: npx wrangler secret put WALLPAPER_ACCESS_TOKEN
+
+  // 每小时第 23 分钟 (UTC) 触发一次 GitHub 上的同步 workflow, 代替不可靠的 GitHub 定时触发;
+  // 需要 secret GITHUB_DISPATCH_TOKEN 与 GITHUB_DISPATCH_REPO, 没配置时定时任务什么都不做
+  "triggers": {
+    "crons": ["23 * * * *"]
+  },
 
   // 自定义域名在 Cloudflare 控制台里配置 (Worker -> Settings -> Domains & Routes)。
   // 这里不写 routes 时, deploy 不会改动控制台里的自定义域名, 且 workers.dev 保持开启。

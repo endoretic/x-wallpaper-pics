@@ -8,6 +8,9 @@
  *   GET /api/v1/muzei/{username}?orientation=portrait&recent=30&limit=1000
  *   GET /api/v1/image/{username}/{orientation}/{id}
  *
+ * 定时任务 (可选): 按 wrangler.jsonc 的 crons 调 GitHub 接口触发同步 workflow, 代替不可靠的 GitHub 定时触发;
+ *       没配置 GITHUB_DISPATCH_TOKEN / GITHUB_DISPATCH_REPO 时什么都不做
+ *
  * 鉴权: Authorization: Bearer <token>, 或 ?token=<token> (仅供手动测试); 不通过一律 403, 先于任何查找,
  *       因此不会透露用户或图片是否存在
  * 图片只能经由清单解析得到, 且对象键必须形如 {前缀}/{用户名}/{横竖目录}/{文件}.jpg|png|webp,
@@ -20,6 +23,12 @@ export interface Env {
   R2_PREFIX?: string;
   PORTRAIT_DIR?: string;
   LANDSCAPE_DIR?: string;
+  /** 细粒度 GitHub token, 只需对目标仓库的 Actions 读写权限 (secret) */
+  GITHUB_DISPATCH_TOKEN?: string;
+  /** owner/repo (secret, 让配置文件保持通用) */
+  GITHUB_DISPATCH_REPO?: string;
+  SYNC_WORKFLOW?: string;
+  SYNC_REF?: string;
 }
 
 const API = '/api/v1/';
@@ -74,7 +83,34 @@ export default {
       return json({ error: 'internal error' }, 500, CACHE_NONE);
     }
   },
+
+  async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
+    // 失败时抛出, 会记在 Worker 的 Cron 事件日志里
+    await dispatchSync(env);
+  },
 } satisfies ExportedHandler<Env>;
+
+/** 触发同步 workflow (等同于在 Actions 页面点 Run workflow); 返回是否真的发出了请求 */
+export async function dispatchSync(env: Env, fetcher: typeof fetch = fetch): Promise<boolean> {
+  const token = env.GITHUB_DISPATCH_TOKEN;
+  const repo = env.GITHUB_DISPATCH_REPO;
+  if (!token || !repo) return false;
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) throw new Error('GITHUB_DISPATCH_REPO 格式不对, 应为 owner/repo');
+  const workflow = encodeURIComponent(env.SYNC_WORKFLOW || 'sync-images.yml');
+  const response = await fetcher(`https://api.github.com/repos/${repo}/actions/workflows/${workflow}/dispatches`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: 'application/vnd.github+json',
+      'Content-Type': 'application/json',
+      'User-Agent': 'wallpaper-worker',
+      'X-GitHub-Api-Version': '2022-11-28',
+    },
+    body: JSON.stringify({ ref: env.SYNC_REF || 'main' }),
+  });
+  if (response.status !== 204) throw new Error(`触发同步失败: HTTP ${response.status}`);    // 不记响应内容和 token
+  return true;
+}
 
 async function handle(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
