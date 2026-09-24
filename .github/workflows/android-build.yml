@@ -58,7 +58,7 @@ jobs:
           apksigner="$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)apksigner"
           expected=$(keytool -list -v -keystore "$ANDROID_KEYSTORE_PATH" -storepass:env ANDROID_KEYSTORE_PASSWORD -alias release \
             | awk -F': ' '/SHA256:/ {gsub(":", "", $2); print tolower($2); exit}')
-          actual=$("$apksigner" verify --print-certs "$apk" | awk -F': ' '/certificate SHA-256 digest/ {print $2; exit}')
+          actual=$("$apksigner" verify --print-certs "$apk" | awk -F': ' '/certificate SHA-256 digest/ {print $NF; exit}')
           if [ -z "$actual" ] || [ "$actual" != "$expected" ]; then
             echo "::error::APK 签名证书与 Secret 里的密钥不一致 (APK: ${actual:-无签名})"; exit 1
           fi
