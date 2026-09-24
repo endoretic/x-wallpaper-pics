@@ -29,6 +29,13 @@ class Settings(context: Context) {
 
     fun displaySpec(): DisplaySpec? = displayMode?.let { DisplaySpec(it, positionX, positionY) }
 
+    /** 上次成功拉取列表的时间 (毫秒), 从没成功过为 0 */
+    val lastRefreshAt: Long get() = prefs.getLong(KEY_LAST_REFRESH, 0L)
+
+    fun markRefreshed(now: Long) {
+        prefs.edit().putLong(KEY_LAST_REFRESH, now).apply()
+    }
+
     fun save(config: SourceConfig, displayMode: FitMode?, positionX: Int, positionY: Int) {
         prefs.edit()
             .putString(KEY_BASE_URL, config.baseUrl)
@@ -45,6 +52,7 @@ class Settings(context: Context) {
     companion object {
         const val DEFAULT_RECENT = 30
         private const val KEY_DISPLAY_MODE = "display_mode"
+        private const val KEY_LAST_REFRESH = "last_refresh_at"
         private const val KEY_POSITION_X = "position_x"
         private const val KEY_POSITION_Y = "position_y"
         private const val KEY_BASE_URL = "base_url"
