@@ -1,6 +1,4 @@
-# 推特图片下载器（竖屏单独归档）
-
-从某个指定用户的 [媒体] 标签页下载**全部图片**，**不含转推**，竖屏图片单独归档；可在 GitHub Actions 上**每小时增量检查**，有新图片就抓取并上传到 **Cloudflare R2 私有桶**。
+# X图片定向下载
 
 - 走 `UserMedia` 接口，该接口本身不含转推，也无需 `X-Client-Transaction-ID`
 - 竖屏判定：`height > width`（正方形算横图方图），优先用接口返回的 `original_info`，缺失时读图片头兜底
@@ -111,7 +109,7 @@ git ls-files | findstr /i "cookie env"    # 只应看到 *.example
 
 **Settings → Secrets and variables → Actions**
 
-Secrets（加密，日志里会被打码）：
+Secrets：
 
 | 名称 | 值 |
 | --- | --- |
@@ -121,14 +119,12 @@ Secrets（加密，日志里会被打码）：
 | `R2_ACCESS_KEY_ID` | 上一步的 Access Key ID |
 | `R2_SECRET_ACCESS_KEY` | 上一步的 Secret Access Key |
 
-Variables（明文，方便随时改）：
+Variables：
 
 | 名称 | 值 |
 | --- | --- |
 | `TARGET_USER` | 目标用户名 |
 | `R2_PREFIX` | 例如 `pic`，留空则放桶根 |
-
-> 用户名不是密钥，放 Variables 就够了；想放 Secrets 也可以，workflow 里换个引用即可。
 
 ### 4. 跑起来
 
