@@ -1,5 +1,8 @@
 # downloader core
 httpx==0.28.1
 
+# load .env when running locally (CI passes secrets as real env vars, .env is optional there)
+python-dotenv==1.1.1
+
 # project-level dep, used by --sync-r2 to upload to Cloudflare R2
 boto3==1.43.101

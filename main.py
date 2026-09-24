@@ -12,7 +12,10 @@
     2. CI  : python main.py --sync-r2  增量检查新图片 -> 上传 Cloudflare R2 (私有桶)
                                        状态存在 R2 上, 无新图片时零下载
 
-全部配置来自环境变量, 仓库里不保存任何真实密钥 (见 README / .env.example)
+配置来源 (两条通道, 最终都是环境变量):
+    本地: 同目录的 .env 文件 (启动时自动加载, 已存在的环境变量优先)
+    CI  : GitHub Actions 的 Secrets / Variables, CI 里不存在 .env
+    仓库里不保存任何真实密钥, 只有 .env.example 模板
 """
 
 import asyncio
@@ -25,13 +28,35 @@ import time
 
 import httpx
 
-########## 配置 (全部来自环境变量) ##########
+_ENV_FILE = os.environ.get('ENV_FILE', '.env')
 
-TARGET_USER = os.environ.get('TARGET_USER', 'lilmonix3')
+
+def load_env_file(path=None):
+    # 本地通道: 读取 .env 填充环境变量 (CI 里没有该文件, 直接跳过)
+    # 已存在的环境变量优先, 空值跳过, 因此 shell 变量 / CI Secrets 都不会被顶掉
+    from dotenv import dotenv_values
+    path = path or _ENV_FILE
+    if not os.path.isabs(path):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), path)
+    if not os.path.isfile(path):
+        return None
+    count = 0
+    for key, value in dotenv_values(path).items():
+        if value and not os.environ.get(key):
+            os.environ[key] = value
+            count += 1
+    print(f'[配置] 已从 {os.path.basename(path)} 加载 {count} 项 (本地通道)')
+    return count
+
+
+load_env_file()
+
+########## 配置 (本地读 .env, CI 读 GitHub Secrets / Variables) ##########
+
+TARGET_USER = os.environ.get('TARGET_USER', '')
 # 目标用户名 (@ 后面的字符), 只支持一个用户
-
-COOKIE_FILE = os.environ.get('COOKIE_FILE', 'cookie.txt')
-# 本地 cookie 文件名; 环境变量 X_COOKIE 优先于该文件
+if not TARGET_USER:
+    raise SystemExit('缺少 TARGET_USER\n')
 
 SAVE_PATH = os.environ.get('SAVE_PATH', '')
 # 本地保存目录, 留空 = 脚本所在目录 (--sync-r2 模式下用临时目录, 该值忽略)
@@ -214,17 +239,13 @@ def is_portrait(_media) -> bool:
 
 
 def load_cookie() -> str:
-    # 读取 cookie: 环境变量 X_COOKIE 优先, 其次读 cookie 文件
-    # 无论哪种来源, 都只提取 auth_token 与 ct0 两项, 多粘贴的内容会被忽略
+    # 只认环境变量 X_COOKIE: 本地由 .env 提供, CI 由 GitHub Secret 提供
+    # 只提取 auth_token 与 ct0 两项, 整行 cookie 直接粘贴也行, 多余内容会被忽略
     raw = os.environ.get('X_COOKIE', '').strip()
-    source = '环境变量 X_COOKIE'
     if not raw:
-        path = COOKIE_FILE if os.path.isabs(COOKIE_FILE) else os.path.join(_SCRIPT_DIR, COOKIE_FILE)
-        if not os.path.exists(path):
-            raise SystemExit(f'找不到 cookie: 请把 auth_token 与 ct0 填入 {path}, 或设置环境变量 X_COOKIE')
-        with open(path, 'r', encoding='utf-8') as f:
-            raw = f.read().strip()
-        source = path
+        raise SystemExit('缺少 X_COOKIE\n'
+                         '本地: 把 auth_token / ct0 填进 .env 的 X_COOKIE\n'
+                         'CI  : 配置 GitHub Secret X_COOKIE')
 
     found = {}
     for key in ('auth_token', 'ct0'):
@@ -234,15 +255,25 @@ def load_cookie() -> str:
 
     missing = [key for key in ('auth_token', 'ct0') if key not in found or found[key] in ('', 'xxxxxxxxxxx')]
     if missing:
-        raise SystemExit(f'{source} 中缺少有效的 {", ".join(missing)} (格式: auth_token=值; ct0=值;)')
+        raise SystemExit(f'X_COOKIE 中缺少有效的 {", ".join(missing)} (格式: auth_token=值; ct0=值;)')
     return f'auth_token={found["auth_token"]}; ct0={found["ct0"]};'
 
 
 ########## X 接口 ##########
 
 
+def prepare_headers():
+    # 把 cookie / ct0 填进请求头, 幂等
+    # 所有会调 X 接口的入口都必须先走这里, 否则发出去的是没有 cookie 的请求, 服务端只会回 403
+    if not _headers.get('cookie'):
+        _headers['cookie'] = load_cookie()
+        _headers['x-csrf-token'] = re.findall(r'ct0=([^;]+)', _headers['cookie'])[0]
+    return _headers
+
+
 def get_user_info():
     # 获取用户数字 ID / 昵称 / 媒体推文数
+    prepare_headers()
     url = ('https://twitter.com/i/api/graphql/xc8f1g7BYqr6VTzTbvNlGw/UserByScreenName?variables={"screen_name":"' + TARGET_USER +
            '","withSafetyModeUserFields":false}&features={"hidden_profile_likes_enabled":false,"hidden_profile_subscriptions_enabled":false,"responsive_web_graphql_exclude_directive_enabled":true,"verified_phone_label_enabled":false,"subscriptions_verification_info_verified_since_enabled":true,"highlights_tweets_tab_ui_enabled":true,"creator_subscriptions_tweet_preview_api_enabled":true,"responsive_web_graphql_skip_user_profile_image_extensions_enabled":false,"responsive_web_graphql_timeline_navigation_enabled":true}&fieldToggles={"withAuxiliaryUserLabels":false}')
     response = httpx.get(quote_url(url), headers=_headers, proxy=proxies, timeout=(3.05, 16)).text
@@ -260,6 +291,7 @@ def get_user_info():
 
 def get_media_page(rest_id, cursor):
     # 请求一页 [媒体] 标签页内容 (UserMedia 接口, 内容不含转推)
+    prepare_headers()
     url = ('https://twitter.com/i/api/graphql/Le6KlbilFmSu-5VltFND-Q/UserMedia?variables={"userId":"' + rest_id + '","count":500,'
            + ('"cursor":"' + cursor + '",' if cursor else '') +
            '"includePromotedContent":false,"withClientEventToken":false,"withBirdwatchNotes":false,"withVoice":true,"withV2Timeline":true}&features={"responsive_web_graphql_exclude_directive_enabled":true,"verified_phone_label_enabled":false,"creator_subscriptions_tweet_preview_api_enabled":true,"responsive_web_graphql_timeline_navigation_enabled":true,"responsive_web_graphql_skip_user_profile_image_extensions_enabled":false,"tweetypie_unmention_optimization_enabled":true,"responsive_web_edit_tweet_api_enabled":true,"graphql_is_translatable_rweb_tweet_is_translatable_enabled":true,"view_counts_everywhere_api_enabled":true,"longform_notetweets_consumption_enabled":true,"responsive_web_twitter_article_tweet_consumption_enabled":false,"tweet_awards_web_tipping_enabled":false,"freedom_of_speech_not_reach_fetch_enabled":true,"standardized_nudges_misinfo":true,"tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled":true,"rweb_video_timestamps_enabled":true,"longform_notetweets_rich_text_read_enabled":true,"longform_notetweets_inline_media_enabled":true,"responsive_web_media_download_video_enabled":false,"responsive_web_enhance_cards_enabled":false}')
@@ -305,17 +337,24 @@ def extract_tweet(item):
     return result.get('rest_id', ''), msecs, medias
 
 
-def build_media(_media, tweet_id, date_str, user_name):
+def media_suffix(index, total) -> str:
+    # 命名后缀: 一条推文只有一份媒体时不带序号, 多份时带 -1 / -2 ...
+    # 不带序号会让同一条推文的多张图算出同一个对象键, 上传时互相覆盖丢图
+    return '' if total <= 1 else f'-{index + 1}'
+
+
+def build_media(_media, tweet_id, date_str, user_name, index=0, total=1):
     # 把一条媒体信息整理成统一结构
+    suffix = media_suffix(index, total)
     if 'video_info' in _media:
         if not HAS_VIDEO:
             return None
         return {'tweet_id': tweet_id, 'date': date_str,
                 'url': get_heighest_video_quality(_media['video_info']['variants']),
-                'saved_name': f'{tweet_id}-{date_str}-{user_name}-vid.mp4',
+                'saved_name': f'{tweet_id}-{date_str}-{user_name}-vid{suffix}.mp4',
                 'is_image': False, 'is_portrait': False}
     return {'tweet_id': tweet_id, 'date': date_str, 'url': _media['media_url_https'],
-            'saved_name': f'{tweet_id}-{date_str}-{user_name}-img.jpg',
+            'saved_name': f'{tweet_id}-{date_str}-{user_name}-img{suffix}.jpg',
             'is_image': True, 'is_portrait': is_portrait(_media)}
 
 
@@ -352,8 +391,8 @@ def collect_media(tweets, user_name, watermark_msecs=None, known_ids=None):
         if tweet_id not in new_ids:
             continue
         date_str = stamp2date(msecs)
-        for _media in medias:
-            built = build_media(_media, tweet_id, date_str, user_name)
+        for index, _media in enumerate(medias):
+            built = build_media(_media, tweet_id, date_str, user_name, index, len(medias))
             if built:
                 media_list.append(built)
     return media_list
@@ -605,7 +644,8 @@ def local_run():
         items, next_cursor = get_media_page(rest_id, cursor)
         if items is None:
             break
-        media_list, _ = collect_media(items, user_name)
+        tweets, _ = parse_page(items)
+        media_list = collect_media(tweets, user_name)
         if media_list:
             if MAX_MEDIA:
                 media_list = media_list[:max(0, MAX_MEDIA - index + 1)]
@@ -624,8 +664,7 @@ def local_run():
 
 
 def main():
-    _headers['cookie'] = load_cookie()
-    _headers['x-csrf-token'] = re.findall(r'ct0=([^;]+)', _headers['cookie'])[0]
+    prepare_headers()
 
     if '--sync-r2' in sys.argv:
         r2_sync(force_full=FORCE_FULL)

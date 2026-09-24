@@ -4,13 +4,12 @@
 __pycache__/
 *.pyc
 
-# 本地 cookie / 密钥, 绝不提交
-cookie.txt
-cookie*.txt
-!cookie.txt.example
+# 本地配置 / 密钥, 绝不提交 (.env.example 是模板, 要进仓库)
 .env
 .env.*
 !.env.example
+cookie.txt
+cookie*.txt
 
 # 下载产物与临时目录
 _selftest_out/

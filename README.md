@@ -16,7 +16,13 @@
 {R2_PREFIX}/state/{用户名}.json          # 增量状态
 ```
 
-用**推文 ID** 而不是序号命名，保证脚本可重复执行、不会重名或错位。
+用**推文 ID** 命名，保证脚本可重复执行、不会重名或错位。一条推文有多张图时追加 `-1` / `-2`，否则它们会算出同一个键、上传时互相覆盖：
+
+```
+单图推文: 1111111111111111111-2026-09-23-昵称-img.jpg
+多图推文: 2222222222222222222-2026-04-26-昵称-img-1.jpg
+          2222222222222222222-2026-04-26-昵称-img-2.jpg
+```
 
 本仓库基于 [caolvchong-top/twitter_download](https://github.com/caolvchong-top/twitter_download)（MIT）精简改写。
 
@@ -27,11 +33,23 @@
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-copy cookie.txt.example cookie.txt     # Linux/macOS: cp cookie.txt.example cookie.txt
-# 编辑 cookie.txt, 并设置 TARGET_USER
-$env:TARGET_USER = '目标用户名'
+
+# 填配置: 编辑仓库根目录的 .env (空模板, 已被 .gitignore 忽略)
+#   TARGET_USER=目标用户名
+#   X_COOKIE=auth_token=...; ct0=...;
+
 .\.venv\Scripts\python.exe main.py     # 结果落在 ./{昵称}_{用户名}/
 ```
+
+配置有两条通道，最终都落到环境变量：
+
+| | 本地 | CI（GitHub Actions） |
+| --- | --- | --- |
+| 来源 | 仓库根目录的 `.env`，启动时自动加载 | repository **secrets** / **variables** |
+| 由谁注入 | `python-dotenv`（`load_env_file()`） | workflow 里的 `env:` 段 |
+| `.env` 是否存在 | 有（git 忽略，不进仓库） | **没有** —— CI checkout 后不存在该文件，加载逻辑静默跳过 |
+
+必填项缺失时**启动即报错**。
 
 自检（完全离线，用假 httpx + 假 S3，不碰网络和密钥）：
 
@@ -41,13 +59,13 @@ $env:TARGET_USER = '目标用户名'
 
 ## 配置项
 
-全部通过环境变量传入，完整模板见 `.env.example`。
+全部通过环境变量传入；本地写进 `.env`，CI 写进 Secrets / Variables；完整模板见 `.env.example`。
 
 | 变量 | 必填 | 说明 |
 | --- | --- | --- |
 | `TARGET_USER` | 是 | 目标用户名（`@` 后面那串），一次只支持一个 |
-| `X_COOKIE` | 是* | `auth_token=...; ct0=...;`，整行 cookie 直接粘也行，只会取这两项 |
-| `COOKIE_FILE` | 否 | 本地 cookie 文件名，默认 `cookie.txt`；`X_COOKIE` 优先 |
+| `X_COOKIE` | 是 | `auth_token=...; ct0=...;`，整行 cookie 直接粘也行，只会取这两项。cookie 的唯一来源（本地 = `.env`，CI = Secret） |
+| `ENV_FILE` | 否 | `.env` 文件名，默认 `.env`（仅影响本地） |
 | `SAVE_PATH` | 否 | 本地模式保存目录，留空 = 脚本所在目录 |
 | `HAS_VIDEO` | 否 | `1` = 连视频一起下（视频不进横竖目录） |
 | `MAX_MEDIA` | 否 | 本地模式单次上限，`0` = 不限 |
@@ -61,8 +79,6 @@ $env:TARGET_USER = '目标用户名'
 | `FULL_SYNC_PAGES` | 否 | 首次 / `FORCE_FULL=1` 时最多翻几页历史（每页最多 500 条推文），默认 `1` |
 | `FORCE_FULL` | 否 | `1` = 忽略已有状态重新全量扫描 |
 | `PORTRAIT_DIR` / `LANDSCAPE_DIR` | 否 | 两个子目录名，默认 `竖屏` / `横屏方图` |
-
-\* 本地模式必填其一；CI 模式用 `X_COOKIE` Secret。
 
 ---
 
@@ -87,7 +103,7 @@ gh repo create <你的仓库名> --private --source=. --push
 推之前先确认没有密钥被带上去：
 
 ```bash
-git status --short          # cookie.txt / .env* 不应出现在列表里
+git status --short          # .env 不应出现在列表里
 git ls-files | findstr /i "cookie env"    # 只应看到 *.example
 ```
 

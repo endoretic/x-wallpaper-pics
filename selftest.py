@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """离线自检
 
-覆盖: cookie 读取 / 横竖判定 / JPEG 尺寸解析 / 媒体提取 /
+覆盖: .env 加载 / cookie 读取 / 横竖判定 / JPEG 尺寸解析 / 媒体提取 /
       本地分文件夹落盘 / R2 增量同步(用假 S3 + 假 X 接口, 完全不联网)
 """
 
@@ -185,39 +185,115 @@ from main import (build_media, collect_media, content_type_for, find_new_tweet_i
                   is_portrait, load_cookie, local_target, object_key, parse_jpeg_size, parse_page,
                   r2_sync, LANDSCAPE_DIR, PORTRAIT_DIR)
 
-# ---------------------------------------------------------------- 0. cookie
-print('=== 0. cookie 读取 ===')
-print('  环境变量 ->', load_cookie())
+# ---------------------------------------------------------------- 0. .env 自动加载
+print('=== 0. .env 自动加载 ===')
+assert main.load_env_file(os.path.join(TEST_DIR, '不存在的.env')) is None
+print('  文件不存在 ->', None, '(静默跳过)')
+
+tmp_env = os.path.join(TEST_DIR, 'dotenv_test.env')
+os.makedirs(TEST_DIR, exist_ok=True)
+with open(tmp_env, 'w', encoding='utf-8') as f:
+    f.write('\ufeff# 注释行会被跳过\n'
+            '\n'
+            'ENV_TEST_PLAIN=plain-value\n'
+            'ENV_TEST_QUOTED="带 空格 与;分号"\n'
+            "ENV_TEST_SINGLE='单引号'\n"
+            'export ENV_TEST_EXPORT=exported\n'
+            'ENV_TEST_COOKIE=auth_token=AAA; ct0=BBB;\n'
+            'ENV_TEST_EMPTY=\n')
+for key in ('ENV_TEST_PLAIN', 'ENV_TEST_QUOTED', 'ENV_TEST_SINGLE', 'ENV_TEST_EXPORT',
+            'ENV_TEST_COOKIE', 'ENV_TEST_EMPTY'):
+    os.environ.pop(key, None)
+main.load_env_file(tmp_env)
+for key in ('ENV_TEST_PLAIN', 'ENV_TEST_QUOTED', 'ENV_TEST_SINGLE', 'ENV_TEST_EXPORT'):
+    print(f'  {key} = {os.environ.get(key)!r}')
+assert os.environ['ENV_TEST_PLAIN'] == 'plain-value'
+assert os.environ['ENV_TEST_QUOTED'] == '带 空格 与;分号', '引号应被去掉, 值原样保留'
+assert os.environ['ENV_TEST_SINGLE'] == '单引号'
+assert os.environ['ENV_TEST_EXPORT'] == 'exported', 'export 前缀应被去掉'
+assert os.environ.get('ENV_TEST_COOKIE') == 'auth_token=AAA; ct0=BBB;', '值里的 = 与 ; 要保留'
+assert 'ENV_TEST_EMPTY' not in os.environ, '空值 (KEY=) 应被跳过'
+print('  空值 (KEY=) -> 跳过不写入, 配置项退回默认值')
+
+os.environ['ENV_TEST_EXISTING'] = '来自环境'
+with open(tmp_env, 'w', encoding='utf-8') as f:
+    f.write('ENV_TEST_EXISTING=来自文件\n')
+main.load_env_file(tmp_env)
+print(f'  已有环境变量 -> 保持 {os.environ["ENV_TEST_EXISTING"]!r} (不被 .env 覆盖)')
+assert os.environ['ENV_TEST_EXISTING'] == '来自环境'
+os.environ.pop('ENV_TEST_EXISTING', None)
+
+# import main 时会尝试加载 .env: 本地有该文件, CI 里没有 (直接跳过, 不能因此报错)
+loaded = main.load_env_file()
+assert loaded is None or isinstance(loaded, int)
+print(f'  import main 时加载 .env -> {"跳过 (CI 无此文件)" if loaded is None else f"载入 {loaded} 项 (本地通道)"}')
+
+# ---------------------------------------------------------------- 1. 两条配置通道
+print('\n=== 1. 本地 .env / CI 环境变量 (cookie 只认 X_COOKIE) ===')
+print('  X_COOKIE ->', load_cookie())
 assert load_cookie() == 'auth_token=AAA111; ct0=BBB222;'
 os.environ['X_COOKIE'] = 'guest_id=v1%3A123; auth_token=AAA111; ct0=BBB222; twid=u%3D999'
 assert load_cookie() == 'auth_token=AAA111; ct0=BBB222;', '整行 cookie 粘贴时应只取所需两项'
 print('  整行 cookie 粘贴 ->', load_cookie())
 
-cookie_path = os.path.join(TEST_DIR, 'cookie.txt')
-shutil.rmtree(TEST_DIR, ignore_errors=True)
-os.makedirs(TEST_DIR, exist_ok=True)
-try:
-    del os.environ['X_COOKIE']
-    main.COOKIE_FILE = cookie_path
-    with open(cookie_path, 'w', encoding='utf-8') as f:
-        f.write('\n  auth_token=FROM_FILE; ct0=CT0_FILE;  \n')
-    assert load_cookie() == 'auth_token=FROM_FILE; ct0=CT0_FILE;'
-    print('  cookie.txt ->', load_cookie())
-    for bad, label in (('auth_token=xxxxxxxxxxx; ct0=xxxxxxxxxxx;', '占位符'),
-                       ('auth_token=ONLY_ONE;', '缺 ct0')):
-        with open(cookie_path, 'w', encoding='utf-8') as f:
-            f.write(bad)
-        try:
-            load_cookie()
-            raise AssertionError(f'{label} 应该报错')
-        except SystemExit as e:
-            print(f'  {label} -> 正确报错: {e}')
-finally:
-    os.environ['X_COOKIE'] = 'auth_token=AAA111; ct0=BBB222;'
-    main.COOKIE_FILE = 'cookie.txt'
+# 回归: 任何调 X 接口的入口都必须自己把 cookie 填进请求头 (这里用假 httpx 抓实际发出的头)
+main._headers.pop('cookie', None)
+main._headers.pop('x-csrf-token', None)
+CAPTURED = {}
+_saved_route = _route
 
-# ---------------------------------------------------------------- 1. 横竖判定
-print('\n=== 1. 横竖判定 ===')
+
+def _capture(url, *args, **kwargs):
+    CAPTURED['url'] = url
+    CAPTURED['headers'] = kwargs.get('headers') or {}
+    return _saved_route(url)
+
+import httpx as _fake
+_saved_get = _fake.get          # 存原始假 get (它接受 **kwargs), 之后要还原
+_fake.get = _capture
+main.get_media_page('42', None)          # 直接调底层函数, 不经过 main()
+sent = CAPTURED.get('headers', {})
+print(f'  直接调 get_media_page -> 请求头 cookie = {sent.get("cookie")!r}, x-csrf-token = {sent.get("x-csrf-token")!r}')
+assert sent.get('cookie'), '请求必须带 cookie (否则服务端只会回 403)'
+assert sent.get('x-csrf-token'), '请求必须带 x-csrf-token'
+_fake.get = _saved_get
+
+# 不再有 cookie.txt 兜底: 只认环境变量 (本地来自 .env, CI 来自 Secret)
+with open(os.path.join(TEST_DIR, 'cookie.txt'), 'w', encoding='utf-8') as f:
+    f.write('auth_token=FROM_FILE; ct0=CT0_FILE;')
+for bad, label in ((None, '未配置'), ('auth_token=xxxxxxxxxxx; ct0=xxxxxxxxxxx;', '占位符'),
+                   ('auth_token=ONLY_ONE;', '缺 ct0')):
+    os.environ['X_COOKIE'] = bad if bad else ''
+    try:
+        load_cookie()
+        raise AssertionError(f'{label} 应该报错')
+    except SystemExit as e:
+        print(f'  {label} -> 正确报错: {str(e).splitlines()[0]}')
+os.environ['X_COOKIE'] = 'auth_token=AAA111; ct0=BBB222;'
+
+# TARGET_USER 同样只认环境变量, 缺失时启动即报错
+import subprocess
+
+
+def run_main(env_overrides):
+    env = {k: v for k, v in os.environ.items() if k not in env_overrides}
+    env.update(env_overrides)
+    env['X_COOKIE'] = 'auth_token=AAA111; ct0=BBB222;'
+    # 显式指向不存在的 .env: 本机开发时根目录有真实 .env, 不能让子进程读到它,
+    # 否则测不出"未配置就报错"; CI 里本来就没有 .env, 行为一致
+    env['ENV_FILE'] = '.env.selftest-not-exist'
+    return subprocess.run([sys.executable, 'main.py'], cwd=os.path.dirname(os.path.abspath(__file__)),
+                          env=env, capture_output=True, encoding='utf-8', errors='replace', timeout=60)
+
+
+p = run_main({'TARGET_USER': ''})
+first_line = (p.stderr or p.stdout or '').strip().splitlines()
+print(f'  TARGET_USER 未配置 -> 退出码 {p.returncode}: {first_line[0] if first_line else "(无输出)"}')
+assert p.returncode != 0 and 'TARGET_USER' in (p.stderr or ''), p.stderr
+shutil.rmtree(TEST_DIR, ignore_errors=True)
+
+# ---------------------------------------------------------------- 2. 横竖判定
+print('\n=== 2. 横竖判定 ===')
 for label, media, expect in (
         ('竖图 1080x1920', media_item(1080, 1920, 'x'), True),
         ('横图 1920x1080', media_item(1920, 1080, 'x'), False),
@@ -230,7 +306,7 @@ assert is_portrait({'media_url_https': 'https://pbs.twimg.com/media/nosize.jpg'}
 print('  尺寸取不到 (图片头也失败) -> False (按横图处理), unknown_size_count =', main.unknown_size_count)
 
 # ---------------------------------------------------------------- 2. JPEG 解析
-print('\n=== 2. JPEG 尺寸解析 ===')
+print('\n=== 3. JPEG 尺寸解析 ===')
 assert parse_jpeg_size(make_jpeg(1080, 1440)) == (1080, 1440)
 print('  无 exif 竖图 ->', parse_jpeg_size(make_jpeg(1080, 1440)))
 assert parse_jpeg_size(make_jpeg(1080, 1440, orientation=6)) == (1440, 1080)
@@ -240,7 +316,7 @@ assert parse_jpeg_size(b'not an image') is None and parse_jpeg_size(b'') is None
 print('  非 jpeg / 空数据 -> None / None')
 
 # ---------------------------------------------------------------- 3. 媒体提取与命名
-print('\n=== 3. 媒体提取与 R2 键名 ===')
+print('\n=== 4. 媒体提取与 R2 键名 ===')
 tweets, page_max = parse_page(FAKE_TIMELINE)
 print(f'  解析出 {len(tweets)} 条推文, 该页最新时间戳 -> {main.stamp2date(page_max)}')
 assert len(tweets) == 3 and page_max == (T0 + 300) * 1000
@@ -270,7 +346,7 @@ assert content_type_for('.png') == 'image/png' and content_type_for('.jpg') == '
 print('  后缀纠正与 ContentType -> png/jpeg 均正确')
 
 # ---------------------------------------------------------------- 4. 本地落盘
-print('\n=== 4. 本地模式分文件夹 ===')
+print('\n=== 5. 本地模式分文件夹 ===')
 local_dir = os.path.join(TEST_DIR, 'local')
 shutil.rmtree(local_dir, ignore_errors=True)
 main.download_all_local(media_list + [video], local_dir, 1, 4)
@@ -287,7 +363,7 @@ assert any('name=4096x4096' in u for u in _api_calls), '原图 404 后应退回 
 assert local_target(media_list[0], local_dir, 1).endswith('.jpg')
 
 # ---------------------------------------------------------------- 5. R2 增量同步
-print('\n=== 5. R2 增量同步 (假 S3 + 假 X 接口) ===')
+print('\n=== 6. R2 增量同步 (假 S3 + 假 X 接口) ===')
 main.down_count = main.portrait_count = main.landscape_count = 0
 print('--- 第 1 次运行: 首次全量 ---')
 r2_sync()

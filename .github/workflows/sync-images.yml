@@ -12,6 +12,10 @@ on:
         type: boolean
         default: false
 
+# 只需读取仓库代码, 不写回仓库 (图片直接进 R2)
+permissions:
+  contents: read
+
 # 同一时间只允许一个实例在跑, 避免两个 run 同时读写水位线状态
 concurrency:
   group: sync-images
