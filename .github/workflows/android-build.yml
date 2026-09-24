@@ -1,6 +1,7 @@
 name: android-build
 
 # 打包 Muzei 插件 APK: 跑单元测试, 有签名密钥时打 release 包, 否则打 debug 包
+# main 分支上签名通过的包会发布到 Releases (永久保存; 构建产物受仓库保留天数限制, 很快就过期)
 on:
   push:
     paths:
@@ -18,6 +19,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    outputs:
+      signed: ${{ steps.verify.outputs.signed }}
+      fingerprint: ${{ steps.verify.outputs.fingerprint }}
     env:
       KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
       VERSION_CODE: ${{ github.run_number }}
@@ -49,6 +53,7 @@ jobs:
 
       # 确认 release 包确实用 Secret 里的密钥签了名 (签名配置没生效时只会得到无法安装的 unsigned 包)
       - name: 核对 APK 签名
+        id: verify
         if: env.ANDROID_KEYSTORE_PATH != ''
         env:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -63,6 +68,8 @@ jobs:
             echo "::error::APK 签名证书与 Secret 里的密钥不一致 (APK: ${actual:-无签名})"; exit 1
           fi
           echo "::notice::APK 已用发布密钥签名, 证书 SHA-256: $actual"
+          echo "signed=true" >> "$GITHUB_OUTPUT"
+          echo "fingerprint=$actual" >> "$GITHUB_OUTPUT"
 
       # 构建日志需要仓库管理员权限才能下载, 注解则公开可读: 失败时把关键错误转成注解, 方便排查
       - name: 把编译 / 测试错误转成注解
@@ -99,3 +106,36 @@ jobs:
           name: wallpaper-source-apk
           path: android-muzei-source/app/build/outputs/apk/**/*.apk
           if-no-files-found: error
+
+  # 只有这个 job 能写仓库 (创建 Release), 打包 job 保持只读
+  release:
+    needs: build
+    if: needs.build.outputs.signed == 'true' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: wallpaper-source-apk
+          path: apk
+
+      - name: 发布到 Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FINGERPRINT: ${{ needs.build.outputs.fingerprint }}
+          VERSION: 0.1.${{ github.run_number }}
+        run: |
+          src=$(find apk -name 'app-release.apk' | head -1)
+          if [ -z "$src" ]; then echo "::error::产物里没有 app-release.apk"; exit 1; fi
+          cp "$src" "x-wallpaper-source-$VERSION.apk"
+          {
+            echo "Muzei 插件 APK，由 commit $GITHUB_SHA 构建。安装与配置见 android-muzei-source/README.md。"
+            echo
+            echo "签名证书 SHA-256：\`$FINGERPRINT\`"
+          } > notes.md
+          gh release create "muzei-source-v$VERSION" "x-wallpaper-source-$VERSION.apk" \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "X 壁纸源 $VERSION" --notes-file notes.md
+          echo "::notice::已发布 muzei-source-v$VERSION"

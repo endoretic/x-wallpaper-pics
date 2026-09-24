@@ -26,8 +26,10 @@
 APK 由 GitHub Actions 打包（[android-build.yml](../.github/workflows/android-build.yml)），本地不需要安装 Android Studio：
 
 - `android-muzei-source/` 有改动时自动运行，也可以在 Actions 页面手动触发
-- 打好的 APK 在运行记录页面底部的 **Artifacts**（`wallpaper-source-apk`）里下载
-- 用 `adb install -r <apk>` 安装，或把 APK 传到手机上点开安装
+- **main 分支**上签名核对通过的包会发布到仓库的 **Releases**（`muzei-source-v0.1.N`），永久保存，不登录也能下载，手机浏览器可以直接打开
+- 其他分支和 PR 只打包不发布，APK 在运行记录页面底部的 **Artifacts** 里，受仓库的产物保留天数限制
+- 用 `adb install -r <apk>` 安装，或在手机上下载后点开安装
+- 每个 Release 的说明里都附有签名证书的 SHA-256，可用 `apksigner verify --print-certs` 核对
 
 ### 签名
 
