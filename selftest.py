@@ -383,7 +383,7 @@ r2_sync()
 state_key = 'pic/state/testuser.json'
 assert state_key in R2_STORE, '应该写回状态'
 state = json.loads(R2_STORE[state_key].decode())
-uploaded_keys = sorted(k for k in R2_STORE if k != state_key)
+uploaded_keys = sorted(k for k in R2_STORE if k != state_key and '/manifests/' not in k)
 for k in uploaded_keys:
     print('  桶内对象:', k)
 assert len(uploaded_keys) == 3, uploaded_keys
@@ -397,13 +397,23 @@ assert dict(UPLOADS)[expect_key] == 'image/jpeg', dict(UPLOADS)
 assert main.down_count == 3 and main.portrait_count == 2 and main.landscape_count == 1
 print('  状态:', json.dumps({k: v for k, v in state.items() if k != 'known_tweet_ids'}, ensure_ascii=False),
       'known_ids =', state['known_tweet_ids'])
+sync_portrait = 'pic/manifests/testuser/portrait.json'
+manifest_images = json.loads(R2_STORE[sync_portrait].decode())['images']
+# 这里的推文 ID 是短数字 (不是 snowflake), 时间只能取文件名里的日期; 同一天内按 ID 倒序
+assert [e['id'] for e in manifest_images] == ['1003', '1001'], manifest_images
+assert manifest_images[1]['width'] == 1080 and manifest_images[1]['height'] == 1920, '应带上接口给的原图宽高'
+assert [e['id'] for e in json.loads(R2_STORE['pic/manifests/testuser/landscape.json'].decode())['images']] == ['1002']
+assert json.loads(R2_STORE['pic/manifests/index.json'].decode())['users'][0]['portrait_count'] == 2
+print('  清单: 竖屏', [e['id'] for e in manifest_images], '/ 横屏方图 [1002], 带宽高')
 
 print('--- 第 2 次运行: 无新图片, 应零下载零上传 ---')
 uploads_before = list(UPLOADS)
+manifests_before = {k: v for k, v in R2_STORE.items() if '/manifests/' in k}
 main.down_count = main.portrait_count = main.landscape_count = 0
 r2_sync()
 assert UPLOADS == uploads_before, f'不应有新的上传: {UPLOADS[len(uploads_before):]}'
 assert main.down_count == 0, '无新图时不应下载'
+assert {k: v for k, v in R2_STORE.items() if '/manifests/' in k} == manifests_before, '无新图时不应改写清单'
 print('  未产生任何上传/下载, 状态水位线保持 ->', json.loads(R2_STORE[state_key].decode())['watermark_msecs'])
 
 print('--- 第 3 次运行: 出现新推文, 只抓新的那张 ---')
@@ -416,7 +426,38 @@ assert len(new_keys) == 1 and '1004-' in new_keys[0], new_keys
 assert new_keys[0].startswith(f'pic/testuser/{PORTRAIT_DIR}/')
 assert main.down_count == 1 and main.portrait_count == 1
 assert json.loads(R2_STORE[state_key].decode())['watermark_msecs'] == (T0 + 400) * 1000
-print('  只新增:', new_keys[0])
+assert [e['id'] for e in json.loads(R2_STORE[sync_portrait].decode())['images']] == ['1004', '1003', '1001']
+print('  只新增:', new_keys[0], '-> 清单里排在最前')
+
+print('--- 第 4 次运行: 清单写入失败, 本轮应报错且状态不前移 ---')
+FAKE_TIMELINE.insert(0, tweet_entry('1005', T0 + 500, [media_item(1080, 1350, 'e')]))
+FAKE_IMAGES['e'] = make_jpeg(1080, 1350)
+state_before = R2_STORE[state_key]
+_real_put = _FakeS3.put_object
+
+
+def _put_failing_manifests(self, Bucket=None, Key=None, Body=b'', **kwargs):
+    if '/manifests/' in Key:
+        raise Exception('An error occurred (InternalError) when calling the PutObject operation')
+    return _real_put(self, Bucket=Bucket, Key=Key, Body=Body, **kwargs)
+
+
+_FakeS3.put_object = _put_failing_manifests
+try:
+    r2_sync()
+    raise AssertionError('清单写入失败时 r2_sync 应该报错')
+except Exception as e:
+    assert 'InternalError' in str(e), e
+finally:
+    _FakeS3.put_object = _real_put
+assert R2_STORE[state_key] == state_before, '清单没写成功时状态不能前移'
+print('  清单写失败 -> 本轮报错, 状态保持不动')
+
+print('--- 第 5 次运行: 恢复后应补上这张图 ---')
+r2_sync()
+assert [e['id'] for e in json.loads(R2_STORE[sync_portrait].decode())['images']][0] == '1005'
+assert json.loads(R2_STORE[state_key].decode())['watermark_msecs'] == (T0 + 500) * 1000
+print('  重跑 -> 图片重新上传, 清单与状态都已补上')
 
 # ---------------------------------------------------------------- 6. 壁纸清单
 print('\n=== 7. 壁纸清单 (manifest) ===')

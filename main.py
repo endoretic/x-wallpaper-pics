@@ -28,6 +28,8 @@ import time
 
 import httpx
 
+import manifest
+
 _ENV_FILE = os.environ.get('ENV_FILE', '.env')
 
 
@@ -351,9 +353,13 @@ def build_media(_media, tweet_id, date_str, user_name, index=0, total=1):
                 'url': get_heighest_video_quality(_media['video_info']['variants']),
                 'saved_name': f'{tweet_id}-{date_str}-{user_name}-vid{suffix}.mp4',
                 'is_image': False, 'is_portrait': False}
-    return {'tweet_id': tweet_id, 'date': date_str, 'url': _media['media_url_https'],
-            'saved_name': f'{tweet_id}-{date_str}-{user_name}-img{suffix}.jpg',
-            'is_image': True, 'is_portrait': is_portrait(_media)}
+    built = {'tweet_id': tweet_id, 'date': date_str, 'url': _media['media_url_https'],
+             'saved_name': f'{tweet_id}-{date_str}-{user_name}-img{suffix}.jpg',
+             'is_image': True, 'is_portrait': is_portrait(_media)}
+    info = _media.get('original_info') or {}
+    if info.get('width') and info.get('height'):     # 原图宽高, 写进壁纸清单 (没有就不写, 不为此多发请求)
+        built['width'], built['height'] = int(info['width']), int(info['height'])
+    return built
 
 
 def parse_page(items):
@@ -588,6 +594,8 @@ def r2_sync(force_full=False):
         cursor = next_cursor
 
     uploaded = 0
+    uploaded_keys = []
+    sizes = {}          # 对象键 -> 原图宽高, 写进清单
     if not new_media:
         print('\n没有新图片, 结束')
     else:
@@ -600,6 +608,9 @@ def r2_sync(force_full=False):
             remote_ext = guess_remote_ext(data, _media) if _media['is_image'] else '.mp4'
             key = upload_to_r2(s3, _media, data, remote_ext)
             uploaded += 1
+            uploaded_keys.append(key)
+            if _media.get('width'):
+                sizes[key] = {'width': _media['width'], 'height': _media['height']}
             down_count += 1
             if _media['is_image']:
                 if _media['is_portrait']:
@@ -608,6 +619,13 @@ def r2_sync(force_full=False):
                     landscape_count += 1
             print(f'[{order}/{len(new_media)}] 已上传 {key}  ({len(data) // 1024} KB)')
         print(f'\n上传完成: {uploaded} / {len(new_media)}')
+
+    # 先更新壁纸清单, 再写状态: 清单写失败会直接抛错让本轮失败, 状态不前移, 下一轮会重新处理这些图
+    # (反过来的话, 状态已记下"处理过", 这些图就永远进不了清单)
+    if uploaded_keys:
+        added = manifest.add_images(s3, R2_BUCKET, R2_PREFIX, {'portrait': PORTRAIT_DIR, 'landscape': LANDSCAPE_DIR},
+                                    uploaded_keys, extra=sizes)
+        print(f'壁纸清单已更新: 新增 {sum(added.values())} 条')
 
     # 更新状态: 水位线取"本页看到的全部推文时间"与旧值的较大者, ID 只保留本轮之前处理过的
     state['watermark_msecs'] = max(max_msecs, watermark)
