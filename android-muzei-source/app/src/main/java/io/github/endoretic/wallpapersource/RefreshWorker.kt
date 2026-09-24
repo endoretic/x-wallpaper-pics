@@ -39,13 +39,16 @@ class RefreshWorker(context: Context, params: WorkerParameters) : Worker(context
         }
         if (images.isEmpty()) return Result.success()      // 列表为空时保留现有壁纸, 不清空
 
+        // 显示方式记进每张图: 改了方式或位置时 token 跟着变, Muzei 会整体换成新排版的图
+        val display = Settings(applicationContext).displaySpec()
         val artworks = images.map { image ->
             Artwork(
                 title = image.title,
                 byline = image.byline,
-                token = image.token,
+                token = DisplaySpec.tokenFor(image.token, display),
                 persistentUri = Uri.parse(image.imageUrl),
                 webUri = image.sourceUrl?.let(Uri::parse),
+                metadata = display?.encode(),
             )
         }
         ProviderContract.getProviderClient(applicationContext, WallpaperArtProvider::class.java).setArtwork(artworks)

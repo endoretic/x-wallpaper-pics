@@ -111,6 +111,80 @@
                 android:text="@string/pool_all" />
         </RadioGroup>
 
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="@string/label_display" />
+
+        <RadioGroup
+            android:id="@+id/display_mode"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content">
+
+            <RadioButton
+                android:id="@+id/display_none"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/display_none" />
+
+            <RadioButton
+                android:id="@+id/display_cover"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/display_cover" />
+
+            <RadioButton
+                android:id="@+id/display_fit"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/display_fit" />
+
+            <RadioButton
+                android:id="@+id/display_center"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/display_center" />
+
+            <RadioButton
+                android:id="@+id/display_stretch"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/display_stretch" />
+        </RadioGroup>
+
+        <TextView
+            android:id="@+id/position_x_label"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp" />
+
+        <SeekBar
+            android:id="@+id/position_x"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:max="100" />
+
+        <TextView
+            android:id="@+id/position_y_label"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp" />
+
+        <SeekBar
+            android:id="@+id/position_y"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:max="100" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:alpha="0.7"
+            android:text="@string/display_hint"
+            android:textSize="12sp" />
+
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"

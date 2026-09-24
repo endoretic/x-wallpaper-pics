@@ -20,6 +20,19 @@
     <string name="pool_10">最新 10 张</string>
     <string name="pool_30">最新 30 张</string>
     <string name="pool_100">最新 100 张</string>
+    <string name="label_display">显示方式</string>
+    <string name="display_none">不处理（交给 Muzei：铺满屏幕，左右随桌面滑动）</string>
+    <string name="display_cover">覆盖（等比铺满屏幕，多出的部分按位置裁掉）</string>
+    <string name="display_fit">填充（整张图完整显示，空白处留黑边）</string>
+    <string name="display_center">居中（原始像素大小，不缩放）</string>
+    <string name="display_stretch">拉伸（拉成屏幕大小，会变形）</string>
+    <string name="mode_cover">覆盖</string>
+    <string name="mode_fit">填充</string>
+    <string name="mode_center">居中</string>
+    <string name="mode_stretch">拉伸</string>
+    <string name="position_x">水平位置 %1$d%%（0 = 最左，100 = 最右）</string>
+    <string name="position_y">垂直位置 %1$d%%（0 = 最上，100 = 最下）</string>
+    <string name="display_hint">按手机屏幕分辨率生成壁纸，优先用本地已存的原图重新排版，不必重新下载。改了显示方式或位置并保存后，Muzei 会换成按新设置排好的图。</string>
     <string name="button_test">测试连接</string>
     <string name="button_save">保存</string>
 

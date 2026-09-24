@@ -22,18 +22,31 @@ class Settings(context: Context) {
         return SourceConfig(base, accessToken, username, orientation, recent)
     }
 
-    fun save(config: SourceConfig) {
+    /** 显示方式: null = 不处理, 交给 Muzei 自己铺 */
+    val displayMode: FitMode? get() = FitMode.fromKey(prefs.getString(KEY_DISPLAY_MODE, null))
+    val positionX: Int get() = prefs.getInt(KEY_POSITION_X, DisplaySpec.CENTER).coerceIn(0, 100)
+    val positionY: Int get() = prefs.getInt(KEY_POSITION_Y, DisplaySpec.CENTER).coerceIn(0, 100)
+
+    fun displaySpec(): DisplaySpec? = displayMode?.let { DisplaySpec(it, positionX, positionY) }
+
+    fun save(config: SourceConfig, displayMode: FitMode?, positionX: Int, positionY: Int) {
         prefs.edit()
             .putString(KEY_BASE_URL, config.baseUrl)
             .putString(KEY_TOKEN, config.accessToken)
             .putString(KEY_USERNAME, config.username)
             .putString(KEY_ORIENTATION, config.orientation)
             .putInt(KEY_RECENT, config.recent)
+            .putString(KEY_DISPLAY_MODE, displayMode?.key)
+            .putInt(KEY_POSITION_X, positionX.coerceIn(0, 100))
+            .putInt(KEY_POSITION_Y, positionY.coerceIn(0, 100))
             .apply()
     }
 
     companion object {
         const val DEFAULT_RECENT = 30
+        private const val KEY_DISPLAY_MODE = "display_mode"
+        private const val KEY_POSITION_X = "position_x"
+        private const val KEY_POSITION_Y = "position_y"
         private const val KEY_BASE_URL = "base_url"
         private const val KEY_TOKEN = "access_token"
         private const val KEY_USERNAME = "username"
