@@ -21,7 +21,7 @@
     <string name="pool_30">最新 30 张</string>
     <string name="pool_100">最新 100 张</string>
     <string name="label_display">显示方式</string>
-    <string name="display_none">不处理（交给 Muzei：铺满屏幕，左右随桌面滑动）</string>
+    <string name="display_none">不处理（交给 Muzei：按高度铺满；左右能否随翻页平移取决于桌面，很多桌面不支持，会一直停在最左边或正中间）</string>
     <string name="display_cover">覆盖（等比铺满屏幕，多出的部分按位置裁掉）</string>
     <string name="display_fit">填充（整张图完整显示，空白处留黑边）</string>
     <string name="display_center">居中（原始像素大小，不缩放）</string>
