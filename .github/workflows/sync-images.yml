@@ -1,11 +1,11 @@
 name: sync-images
 
-# 每小时检查一次目标用户有没有新图片, 有就抓下来推到 Cloudflare R2 (私有桶)
+# 检查目标用户有没有新图片, 有就抓下来推到 Cloudflare R2 (私有桶)
+#
+# 定时由 Worker 的 Cron Trigger 负责 (每小时第 23 分钟调 workflow_dispatch, 见 worker/README.md),
+# 这里不用 GitHub 的 schedule: 它是尽力而为, 实测 5 天只触发了 24 次, 间隔 2.6~8.6 小时, 分钟也不固定。
+# 不部署 Worker 的话, 可以在 on: 下加回 schedule (cron 是 UTC, 避开整点)
 on:
-  schedule:
-    # 注意: 这是 UTC 时间. 整点前后是 GitHub 定时任务的高峰, 可能延迟甚至被丢弃,
-    # 所以放在每小时第 23 分钟 (官方文档建议避开整点)
-    - cron: '23 * * * *'
   workflow_dispatch:
     inputs:
       force_full:
