@@ -1,6 +1,6 @@
 import { env } from 'cloudflare:test';
 import { beforeEach, describe, expect, it } from 'vitest';
-import worker, { dispatchSync, type Env } from '../src/index';
+import worker, { cleanupSyncRuns, dispatchSync, runScheduled, type Env } from '../src/index';
 
 const ENV = env as unknown as Env;
 const TOKEN = 'test-token';
@@ -272,5 +272,72 @@ describe('定时触发同步', () => {
     await expect(dispatchSync({ ...ENV, GITHUB_DISPATCH_TOKEN: 't', GITHUB_DISPATCH_REPO: 'owner/repo/../x' }, fakeFetch(204)))
       .rejects.toThrow(/owner\/repo/);
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe('清理旧的同步运行记录', () => {
+  const NOW = Date.parse('2026-09-29T06:00:00Z');
+  const GH = { ...ENV, GITHUB_DISPATCH_TOKEN: 'gh-token', GITHUB_DISPATCH_REPO: 'owner/repo' };
+  const run = (id: number, createdAt: string, status = 'completed') => ({ id, status, created_at: createdAt });
+
+  function fakeGitHub(runs: object[], { listStatus = 200, deleteStatus = 204, dispatchStatus = 204 } = {}) {
+    const calls: { method: string; url: string }[] = [];
+    const fetcher = (async (url: string, init: RequestInit = {}) => {
+      const method = init.method ?? 'GET';
+      calls.push({ method, url });
+      if (method === 'POST') return new Response(null, { status: dispatchStatus });
+      if (method === 'DELETE') return new Response(null, { status: deleteStatus });
+      return new Response(JSON.stringify({ workflow_runs: runs }), { status: listStatus });
+    }) as unknown as typeof fetch;
+    return { calls, fetcher };
+  }
+
+  it('没配置 token 或仓库时什么都不做', async () => {
+    const { calls, fetcher } = fakeGitHub([]);
+    expect(await cleanupSyncRuns({ ...ENV, GITHUB_DISPATCH_TOKEN: undefined, GITHUB_DISPATCH_REPO: 'o/r' }, fetcher, NOW)).toBe(0);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('只列同步 workflow 里 24 小时前、已完成的记录', async () => {
+    const { calls, fetcher } = fakeGitHub([]);
+    await cleanupSyncRuns(GH, fetcher, NOW);
+    const url = new URL(calls[0].url);
+    expect(url.pathname).toBe('/repos/owner/repo/actions/workflows/sync-images.yml/runs');
+    expect(url.searchParams.get('status')).toBe('completed');
+    expect(url.searchParams.get('created')).toBe('<2026-09-28T06:00:00Z');
+  });
+
+  it('只删过期且已完成的, 接口多返回的新记录也不删', async () => {
+    const { calls, fetcher } = fakeGitHub([
+      run(1, '2026-09-27T10:23:00Z'),
+      run(2, '2026-09-28T05:59:59Z'),
+      run(3, '2026-09-28T06:30:00Z'),                   // 不到 24 小时
+      run(4, '2026-09-27T10:23:00Z', 'in_progress'),   // 还没跑完
+    ]);
+    expect(await cleanupSyncRuns(GH, fetcher, NOW)).toBe(2);
+    expect(calls.filter((c) => c.method === 'DELETE').map((c) => c.url)).toEqual([
+      'https://api.github.com/repos/owner/repo/actions/runs/1',
+      'https://api.github.com/repos/owner/repo/actions/runs/2',
+    ]);
+  });
+
+  it('保留时长可配置, 设为 0 表示不清理', async () => {
+    const { calls, fetcher } = fakeGitHub([run(1, '2026-09-29T04:00:00Z')]);
+    expect(await cleanupSyncRuns({ ...GH, SYNC_RUN_RETENTION_HOURS: '1' }, fetcher, NOW)).toBe(1);
+    expect(await cleanupSyncRuns({ ...GH, SYNC_RUN_RETENTION_HOURS: '0' }, fetcher, NOW)).toBe(0);
+    expect(calls.filter((c) => c.method === 'GET')).toHaveLength(1);
+  });
+
+  it('列出或删除失败时报错, 错误信息里没有 token', async () => {
+    await expect(cleanupSyncRuns(GH, fakeGitHub([], { listStatus: 403 }).fetcher, NOW)).rejects.toThrow(/HTTP 403/);
+    const failing = fakeGitHub([run(1, '2026-09-27T10:23:00Z')], { deleteStatus: 403 }).fetcher;
+    await expect(cleanupSyncRuns(GH, failing, NOW)).rejects.toThrow(/删除运行记录失败/);
+    await expect(cleanupSyncRuns(GH, failing, NOW)).rejects.not.toThrow(/gh-token/);
+  });
+
+  it('触发同步失败时照样清理, 两个错误都会报出来', async () => {
+    const { calls, fetcher } = fakeGitHub([run(1, '2000-01-01T00:00:00Z')], { dispatchStatus: 500 });
+    await expect(runScheduled(GH, fetcher)).rejects.toThrow(/触发同步失败: HTTP 500/);
+    expect(calls.map((c) => c.method)).toEqual(['POST', 'GET', 'DELETE']);
   });
 });

@@ -8,8 +8,8 @@
  *   GET /api/v1/muzei/{username}?orientation=portrait&recent=30&limit=1000
  *   GET /api/v1/image/{username}/{orientation}/{id}
  *
- * 定时任务 (可选): 按 wrangler.jsonc 的 crons 调 GitHub 接口触发同步 workflow, 代替不可靠的 GitHub 定时触发;
- *       没配置 GITHUB_DISPATCH_TOKEN / GITHUB_DISPATCH_REPO 时什么都不做
+ * 定时任务 (可选): 按 wrangler.jsonc 的 crons 调 GitHub 接口触发同步 workflow (代替不可靠的 GitHub 定时触发),
+ *       并删除超过保留时长的同步运行记录; 没配置 GITHUB_DISPATCH_TOKEN / GITHUB_DISPATCH_REPO 时什么都不做
  *
  * 鉴权: Authorization: Bearer <token>, 或 ?token=<token> (仅供手动测试); 不通过一律 403, 先于任何查找,
  *       因此不会透露用户或图片是否存在
@@ -29,6 +29,8 @@ export interface Env {
   GITHUB_DISPATCH_REPO?: string;
   SYNC_WORKFLOW?: string;
   SYNC_REF?: string;
+  /** 同步 workflow 的运行记录保留多少小时, 默认 24 */
+  SYNC_RUN_RETENTION_HOURS?: string;
 }
 
 const API = '/api/v1/';
@@ -85,31 +87,89 @@ export default {
   },
 
   async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
-    // 失败时抛出, 会记在 Worker 的 Cron 事件日志里
-    await dispatchSync(env);
+    await runScheduled(env);
   },
 } satisfies ExportedHandler<Env>;
 
-/** 触发同步 workflow (等同于在 Actions 页面点 Run workflow); 返回是否真的发出了请求 */
-export async function dispatchSync(env: Env, fetcher: typeof fetch = fetch): Promise<boolean> {
+// ---------------------------------------------------------------- 定时任务: 触发同步 + 清理旧运行记录
+
+const GITHUB_API = 'https://api.github.com';
+/** 免费版每次触发最多 50 个外部请求: 触发同步 1 + 列出记录 1, 余下留给删除 */
+const MAX_DELETIONS_PER_RUN = 40;
+
+/** 触发同步与清理旧记录互不影响; 任一失败都会在最后抛出, 记进 Worker 的 Cron 事件日志 */
+export async function runScheduled(env: Env, fetcher: typeof fetch = fetch): Promise<void> {
+  const errors: string[] = [];
+  for (const task of [dispatchSync, cleanupSyncRuns]) {
+    try {
+      await task(env, fetcher);
+    } catch (e) {
+      errors.push(e instanceof Error ? e.message : String(e));
+    }
+  }
+  if (errors.length) throw new Error(errors.join('; '));
+}
+
+function githubTarget(env: Env): { token: string; repo: string; workflow: string } | null {
   const token = env.GITHUB_DISPATCH_TOKEN;
   const repo = env.GITHUB_DISPATCH_REPO;
-  if (!token || !repo) return false;
+  if (!token || !repo) return null;
   if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) throw new Error('GITHUB_DISPATCH_REPO 格式不对, 应为 owner/repo');
-  const workflow = encodeURIComponent(env.SYNC_WORKFLOW || 'sync-images.yml');
-  const response = await fetcher(`https://api.github.com/repos/${repo}/actions/workflows/${workflow}/dispatches`, {
+  return { token, repo, workflow: encodeURIComponent(env.SYNC_WORKFLOW || 'sync-images.yml') };
+}
+
+function githubHeaders(token: string): Record<string, string> {
+  return {
+    Authorization: `Bearer ${token}`,
+    Accept: 'application/vnd.github+json',
+    'Content-Type': 'application/json',
+    'User-Agent': 'wallpaper-worker',
+    'X-GitHub-Api-Version': '2022-11-28',
+  };
+}
+
+/** 触发同步 workflow (等同于在 Actions 页面点 Run workflow); 返回是否真的发出了请求 */
+export async function dispatchSync(env: Env, fetcher: typeof fetch = fetch): Promise<boolean> {
+  const target = githubTarget(env);
+  if (!target) return false;
+  const response = await fetcher(`${GITHUB_API}/repos/${target.repo}/actions/workflows/${target.workflow}/dispatches`, {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: 'application/vnd.github+json',
-      'Content-Type': 'application/json',
-      'User-Agent': 'wallpaper-worker',
-      'X-GitHub-Api-Version': '2022-11-28',
-    },
+    headers: githubHeaders(target.token),
     body: JSON.stringify({ ref: env.SYNC_REF || 'main' }),
   });
   if (response.status !== 204) throw new Error(`触发同步失败: HTTP ${response.status}`);    // 不记响应内容和 token
   return true;
+}
+
+/**
+ * 删除同步 workflow 超过保留时长 (SYNC_RUN_RETENTION_HOURS, 默认 24 小时) 的已完成运行记录
+ * 仓库设置里的保留天数只清日志和产物, 运行记录本身会一直留在列表里; 只动同步 workflow, 打包和测试的记录不动
+ * 返回删除的条数; 每次最多删 MAX_DELETIONS_PER_RUN 条, 积压的会在之后几次触发里删完
+ */
+export async function cleanupSyncRuns(env: Env, fetcher: typeof fetch = fetch, now: number = Date.now()): Promise<number> {
+  const target = githubTarget(env);
+  if (!target) return 0;
+  const hours = Number(env.SYNC_RUN_RETENTION_HOURS ?? 24);
+  if (!(hours > 0)) return 0;
+  const cutoff = now - hours * 3600_000;
+  const query = new URLSearchParams({
+    status: 'completed',
+    per_page: String(MAX_DELETIONS_PER_RUN),
+    created: `<${new Date(cutoff).toISOString().replace(/\.\d{3}Z$/, 'Z')}`,
+  });
+  const headers = githubHeaders(target.token);
+  const list = await fetcher(`${GITHUB_API}/repos/${target.repo}/actions/workflows/${target.workflow}/runs?${query}`, { headers });
+  if (list.status !== 200) throw new Error(`列出运行记录失败: HTTP ${list.status}`);
+  const body = await list.json<{ workflow_runs?: { id: number; status: string; created_at: string }[] }>();
+  let deleted = 0;
+  for (const run of body.workflow_runs ?? []) {
+    // 再核对一遍, 不依赖接口的过滤条件
+    if (run.status !== 'completed' || !(Date.parse(run.created_at) < cutoff)) continue;
+    const response = await fetcher(`${GITHUB_API}/repos/${target.repo}/actions/runs/${run.id}`, { method: 'DELETE', headers });
+    if (response.status !== 204) throw new Error(`删除运行记录失败 (已删 ${deleted} 条): HTTP ${response.status}`);
+    deleted++;
+  }
+  return deleted;
 }
 
 async function handle(request: Request, env: Env): Promise<Response> {

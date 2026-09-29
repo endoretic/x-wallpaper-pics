@@ -34,9 +34,10 @@ npx wrangler secret put GITHUB_DISPATCH_REPO       # 例如 owner/repo
 ```
 
 - 没配置这两个 secret 时，定时任务什么都不做
-- token 只能触发 / 取消这个仓库的 workflow，读不到仓库的 Secrets
+- token 只能触发 / 取消 / 删除这个仓库的 workflow 运行，读不到仓库的 Secrets
 - 触发失败（例如 token 过期）会记在 Cloudflare 控制台该 Worker 的 Cron 事件日志里
-- 可选变量：`SYNC_WORKFLOW`（默认 `sync-images.yml`）、`SYNC_REF`（默认 `main`）
+- 同一个定时任务还会删除同步 workflow 超过 24 小时的已完成运行记录：仓库设置里的保留天数只清日志和产物，运行记录本身会一直留在 Actions 列表里。只动同步 workflow，打包和测试的记录保留；每次最多删 40 条（免费版每次触发最多 50 个外部请求），积压的会在之后几次触发里删完
+- 可选变量：`SYNC_WORKFLOW`（默认 `sync-images.yml`）、`SYNC_REF`（默认 `main`）、`SYNC_RUN_RETENTION_HOURS`（运行记录保留小时数，默认 `24`，`0` 表示不清理）
 
 ## 接口
 

@@ -19,7 +19,7 @@
 
   // 访问 token 是 secret, 不写在这里: npx wrangler secret put WALLPAPER_ACCESS_TOKEN
 
-  // 每小时第 23 分钟 (UTC) 触发一次 GitHub 上的同步 workflow, 代替不可靠的 GitHub 定时触发;
+  // 每小时第 23 分钟 (UTC) 触发一次 GitHub 上的同步 workflow (代替不可靠的 GitHub 定时触发), 并删除超过 24 小时的同步运行记录;
   // 需要 secret GITHUB_DISPATCH_TOKEN 与 GITHUB_DISPATCH_REPO, 没配置时定时任务什么都不做
   "triggers": {
     "crons": ["23 * * * *"]
